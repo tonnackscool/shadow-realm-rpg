@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Shadow Realm - Text RPG</title>
+<style>
+  body { background:#0b0d10; color:#c9d1d9; font-family: 'Courier New', monospace; max-width:700px; margin:20px auto; padding:0 15px; }
+  h1 { color:#e3b341; text-align:center; letter-spacing:2px; border-bottom:2px solid #e3b341; padding-bottom:10px;}
+  #log { background:#161b22; border:1px solid #30363d; padding:12px; height:220px; overflow-y:auto; margin-bottom:12px; white-space:pre-wrap; font-size:14px; line-height:1.5;}
+  #stats { display:grid; grid-template-columns:repeat(2,1fr); gap:6px; background:#161b22; border:1px solid #30363d; padding:12px; margin-bottom:12px; font-size:14px;}
+  .stat b { color:#58a6ff; }
+  #bar-wrap { background:#21262d; border-radius:4px; height:14px; overflow:hidden; margin:4px 0 8px; }
+  #bar { background:#3fb950; height:100%; width:100%; transition:width .3s; }
+  .btnrow { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+  button { background:#21262d; color:#c9d1d9; border:1px solid #30363d; padding:8px 14px; cursor:pointer; font-family:inherit; font-size:13px; border-radius:4px; }
+  button:hover:not(:disabled) { background:#30363d; border-color:#58a6ff; }
+  button:disabled { opacity:0.4; cursor:not-allowed; }
+  #rank { text-align:center; color:#e3b341; font-size:13px; margin-bottom:10px; }
+  .section-title { color:#7d8590; font-size:12px; text-transform:uppercase; letter-spacing:1px; margin:14px 0 6px; }
+</style>
+</head>
+<body>
+<h1>Shadow Realm</h1>
+<div id="hero-select" style="background:#161b22;border:1px solid #30363d;padding:12px;margin-bottom:12px;">
+  <div class="section-title" style="margin-top:0;">Choose your hero</div>
+  <div id="hero-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+</div>
+<div id="game-ui" style="display:none;">
+<div id="wallet-box" style="background:#161b22;border:1px solid #30363d;padding:10px;margin-bottom:12px;font-size:13px;">
+  <div id="wallet-status">Wallet not connected</div>
+  <div class="btnrow" style="margin-top:8px;">
+    <button id="connectBtn" onclick="connectWallet()">Connect Phantom Wallet</button>
+    <button id="redeemBtn" onclick="redeemGold()" disabled>Redeem Gold for TRI</button>
+  </div>
+  <div id="redeemInfo" style="color:#7d8590;margin-top:6px;">Rate: 100 gold = 1 TRI. Requires wallet connection.</div>
+  <div class="btnrow" style="margin-top:8px;">
+    <button onclick="exportQueue()">Export Redemption Queue (JSON)</button>
+  </div>
+</div>
+<div id="rank">Rank: -- | Level 1</div>
+<div id="stats"></div>
+<div id="bar-wrap"><div id="bar"></div></div>
+<div class="section-title">Train (uses stamina)</div>
+<div class="btnrow">
+  <button onclick="train('str')">Train Strength (-5 STA)</button>
+  <button onclick="train('def')">Train Defense (-5 STA)</button>
+  <button onclick="train('hp')">Train Vitality (-8 STA)</button>
+</div>
+<div class="section-title">Actions</div>
+<div class="btnrow">
+  <button onclick="fightMonster()">Hunt Monster (-10 STA)</button>
+  <button onclick="rest()">Rest (free, small STA regen)</button>
+  <button onclick="resetGame()">Reset Character</button>
+</div>
+<div class="section-title">PvP Arena</div>
+<div class="btnrow">
+  <button onclick="refreshArena()">Refresh Opponent List</button>
+</div>
+<div id="arena-list" style="background:#161b22;border:1px solid #30363d;padding:10px;margin-bottom:12px;font-size:13px;"></div>
+<div id="log"></div>
+</div>
+
+<script>
+const HEROES = [
+  { id:'warrior', name:'Warrior', tagline:'Brute strength, front-line damage', str:8, def:5, maxhp:35, staGain:1, desc:'High STR, straightforward melee damage. Best for players who want fast kills.' },
+  { id:'guardian', name:'Guardian', tagline:'Defense-first, outlasts monsters', str:4, def:10, maxhp:40, staGain:1, desc:'High DEF and HP, low STR. Wins fights through attrition, rarely retreats.' },
+  { id:'rogue', name:'Rogue', tagline:'Balanced, efficient stamina use', str:6, def:6, maxhp:28, staGain:2, desc:'Even stats, regenerates stamina faster. Good for grinding many fights per session.' },
+  { id:'berserker', name:'Berserker', tagline:'Glass cannon, huge risk/reward', str:11, def:2, maxhp:22, staGain:1, desc:'Very high STR, very low DEF/HP. Kills fast but dies fast too.' },
+  { id:'scholar', name:'Scholar', tagline:'Slow start, scales best long-term', str:4, def:4, maxhp:26, staGain:1, xpBonus:1.25, desc:'Weak early stats but gains 25% more XP per kill. Rewards patient players.' }
+];
+
+let state = null;
+
+function renderHeroSelect() {
+  const list = document.getElementById('hero-list');
+  list.innerHTML = HEROES.map(h => `
+    <div style="border:1px solid #30363d;border-radius:6px;padding:10px;">
+      <div style="color:#e3b341;font-weight:bold;">${h.name} <span style="color:#7d8590;font-weight:normal;font-size:12px;">— ${h.tagline}</span></div>
+      <div style="font-size:12px;color:#7d8590;margin:4px 0;">STR ${h.str} | DEF ${h.def} | HP ${h.maxhp}${h.xpBonus?' | +25% XP':''}${h.staGain>1?' | Fast stamina regen':''}</div>
+      <div style="font-size:12px;margin-bottom:6px;">${h.desc}</div>
+      <button onclick="selectHero('${h.id}')">Play as ${h.name}</button>
+    </div>
+  `).join('');
+}
+
+function selectHero(id) {
+  const h = HEROES.find(x => x.id === id);
+  state = {
+    hero: h.id,
+    name: h.name,
+    level: 1, xp: 0, xpNext: 20,
+    str: h.str, def: h.def, maxhp: h.maxhp, hp: h.maxhp,
+    gold: 0,
+    stamina: 100, maxStamina: 100,
+    staGain: h.staGain, xpBonus: h.xpBonus || 1,
+    kills: 0
+  };
+  document.getElementById('hero-select').style.display = 'none';
+  document.getElementById('game-ui').style.display = 'block';
+  log.textContent = "";
+  print(`You begin your journey as a ${h.name}. ${h.desc}`);
+  render();
+  tryAutoConnect();
+}
+
+const TRI_RATE = 100; // gold per 1 TRI
+let walletPubkey = null;
+
+async function connectWallet() {
+  if (!window.solana || !window.solana.isPhantom) {
+    alert("Phantom wallet not found. Install it from phantom.app, or open this page in a browser/app with Phantom enabled (e.g. Phantom's built-in browser on mobile).");
+    return;
+  }
+  try {
+    const resp = await window.solana.connect();
+    walletPubkey = resp.publicKey.toString();
+    document.getElementById('wallet-status').textContent = `Connected: ${walletPubkey.slice(0,4)}...${walletPubkey.slice(-4)}`;
+    document.getElementById('connectBtn').textContent = "Wallet Connected";
+    document.getElementById('connectBtn').disabled = true;
+    document.getElementById('redeemBtn').disabled = false;
+    print(`Wallet connected: ${walletPubkey}`);
+    localStorage.setItem('shadowrealm_wallet', walletPubkey);
+  } catch (e) {
+    print(`Wallet connection failed or was rejected.`);
+  }
+}
+
+function redeemGold() {
+  if (!walletPubkey) { alert("Connect your wallet first."); return; }
+  if (state.gold < TRI_RATE) { print(`You need at least ${TRI_RATE} gold to redeem 1 TRI. You have ${state.gold}.`); return; }
+  const amount = Math.floor(state.gold / TRI_RATE);
+  const goldSpent = amount * TRI_RATE;
+  state.gold -= goldSpent;
+
+  const queue = JSON.parse(localStorage.getItem('tri_redemption_queue') || '[]');
+  queue.push({
+    wallet: walletPubkey,
+    triAmount: amount,
+    goldSpent: goldSpent,
+    timestamp: new Date().toISOString(),
+    status: "pending"
+  });
+  localStorage.setItem('tri_redemption_queue', JSON.stringify(queue));
+
+  print(`Redeemed ${goldSpent} gold for ${amount} TRI. Request queued for payout to ${walletPubkey.slice(0,4)}...${walletPubkey.slice(-4)}.`);
+  print(`Note: TRI is sent by the treasury payout script, not instantly. Check back after processing.`);
+  render();
+}
+
+const log = document.getElementById('log');
+function print(msg) {
+  log.textContent += msg + "\n";
+  log.scrollTop = log.scrollHeight;
+}
+
+function render() {
+  if (!state) return;
+  document.getElementById('rank').textContent =
+    `${state.name} | Level ${state.level} | Kills: ${state.kills} | Gold: ${state.gold}`;
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><b>STR:</b> ${state.str}</div>
+    <div class="stat"><b>DEF:</b> ${state.def}</div>
+    <div class="stat"><b>HP:</b> ${state.hp}/${state.maxhp}</div>
+    <div class="stat"><b>XP:</b> ${state.xp}/${state.xpNext}</div>
+  `;
+  const pct = Math.max(0, Math.round((state.stamina / state.maxStamina) * 100));
+  document.getElementById('bar').style.width = pct + '%';
+  document.getElementById('bar').style.background = pct < 25 ? '#f85149' : (pct < 60 ? '#e3b341' : '#3fb950');
+  save();
+  publishToArena();
+}
+
+function useStamina(cost) {
+  if (!state) return false;
+  if (state.stamina < cost) { print(`Not enough stamina. Rest or wait.`); return false; }
+  state.stamina -= cost;
+  return true;
+}
+
+function train(type) {
+  const cost = type === 'hp' ? 8 : 5;
+  if (!useStamina(cost)) return;
+  if (type === 'str') { state.str += 1; print(`You train hard. Strength is now ${state.str}.`); }
+  if (type === 'def') { state.def += 1; print(`You drill your defense. Defense is now ${state.def}.`); }
+  if (type === 'hp') { state.maxhp += 3; state.hp = Math.min(state.hp+3, state.maxhp); print(`Your body toughens. Max HP is now ${state.maxhp}.`); }
+  render();
+}
+
+function rest() {
+  state.stamina = Math.min(state.maxStamina, state.stamina + 15);
+  state.hp = Math.min(state.maxhp, state.hp + 5);
+  print(`You rest by the fire. Stamina and HP recover slightly.`);
+  render();
+}
+
+function fightMonster() {
+  if (!useStamina(10)) return;
+  const monsters = [
+    {name:"Goblin", hp:15, atk:3, xp:8, gold:5},
+    {name:"Wild Boar", hp:20, atk:4, xp:10, gold:7},
+    {name:"Skeleton", hp:25, atk:5, xp:14, gold:10},
+    {name:"Bandit", hp:30, atk:6, xp:18, gold:14},
+    {name:"Orc Brute", hp:40, atk:8, xp:26, gold:20}
+  ];
+  const tier = Math.min(monsters.length-1, Math.floor(state.level/2));
+  const m = {...monsters[tier]};
+  print(`A ${m.name} attacks!`);
+  let rounds = 0;
+  while (m.hp > 0 && state.hp > 0 && rounds < 20) {
+    const dmg = Math.max(1, state.str * 2 - Math.floor(Math.random()*3));
+    m.hp -= dmg;
+    print(`You hit the ${m.name} for ${dmg} damage.`);
+    if (m.hp <= 0) break;
+    const mdmg = Math.max(1, m.atk - Math.floor(state.def/2));
+    state.hp -= mdmg;
+    print(`The ${m.name} hits you for ${mdmg} damage.`);
+    rounds++;
+  }
+  if (state.hp <= 0) {
+    state.hp = 1;
+    print(`You were nearly defeated and retreat to safety!`);
+  } else if (m.hp <= 0) {
+    state.kills++;
+    state.xp += Math.round(m.xp * (state.xpBonus || 1));
+    state.gold += m.gold;
+    print(`You defeated the ${m.name}! +${m.xp} XP, +${m.gold} gold.`);
+    if (state.xp >= state.xpNext) {
+      state.level++;
+      state.xp -= state.xpNext;
+      state.xpNext = Math.floor(state.xpNext * 1.4);
+      state.maxhp += 5;
+      state.hp = state.maxhp;
+      state.str += 1; state.def += 1;
+      print(`*** LEVEL UP! You are now level ${state.level}. ***`);
+    }
+  }
+  render();
+}
+
+function resetGame() {
+  if (!confirm("Reset your character and choose a new hero? This cannot be undone.")) return;
+  state = null;
+  localStorage.removeItem('shadowrealm_save');
+  log.textContent = "";
+  document.getElementById('game-ui').style.display = 'none';
+  document.getElementById('hero-select').style.display = 'block';
+  renderHeroSelect();
+}
+
+function save() {
+  if (!state) return;
+  try { localStorage.setItem('shadowrealm_save', JSON.stringify(state)); } catch(e) {}
+}
+function load() {
+  try {
+    const s = localStorage.getItem('shadowrealm_save');
+    if (s) {
+      state = JSON.parse(s);
+      document.getElementById('hero-select').style.display = 'none';
+      document.getElementById('game-ui').style.display = 'block';
+      print("Welcome back, adventurer. Your progress was restored.");
+      return true;
+    }
+  } catch(e) {}
+  return false;
+}
+
+function getPlayerId() {
+  let id = localStorage.getItem('shadowrealm_pid');
+  if (!id) {
+    id = 'p_' + Math.random().toString(36).slice(2, 10);
+    localStorage.setItem('shadowrealm_pid', id);
+  }
+  return id;
+}
+
+async function publishToArena() {
+  if (!state) return;
+  try {
+    const pid = getPlayerId();
+    const record = {
+      id: pid,
+      name: state.name + (walletPubkey ? ` (${walletPubkey.slice(0,4)}...)` : ''),
+      hero: state.hero,
+      level: state.level,
+      str: state.str,
+      def: state.def,
+      maxhp: state.maxhp,
+      kills: state.kills,
+      updated: new Date().toISOString()
+    };
+    await window.storage.set('pvp:' + pid, JSON.stringify(record), true);
+  } catch (e) { /* storage unavailable, ignore */ }
+}
+
+let arenaRecords = [];
+
+async function refreshArena() {
+  const listEl = document.getElementById('arena-list');
+  listEl.innerHTML = 'Loading opponents...';
+  try {
+    const keys = await window.storage.list('pvp:', true);
+    const pid = getPlayerId();
+    const others = (keys.keys || []).filter(k => k !== 'pvp:' + pid);
+    if (others.length === 0) {
+      listEl.innerHTML = 'No other players found yet. Play, level up, and check back — other players who connect will appear here.';
+      return;
+    }
+    const records = [];
+    for (const k of others) {
+      try {
+        const res = await window.storage.get(k, true);
+        if (res && res.value) records.push(JSON.parse(res.value));
+      } catch (e) {}
+    }
+    records.sort((a,b) => b.level - a.level);
+    arenaRecords = records.slice(0, 15);
+    listEl.innerHTML = arenaRecords.map((r, i) => `
+      <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #21262d;padding:6px 0;">
+        <span>${r.name} — Lvl ${r.level} (STR ${r.str}/DEF ${r.def})</span>
+        <button onclick="fightPlayer(${i})">Challenge</button>
+      </div>
+    `).join('');
+  } catch (e) {
+    listEl.innerHTML = 'Arena unavailable right now. Try again shortly.';
+  }
+}
+
+function fightPlayer(index) {
+  const opp = arenaRecords[index];
+  if (!opp) return;
+  if (!state) return;
+  if (state.stamina < 15) { print(`Not enough stamina to enter the arena (need 15).`); return; }
+  state.stamina -= 15;
+  print(`You challenge ${opp.name} to a duel!`);
+
+  let myHp = state.hp, oppHp = opp.maxhp;
+  let rounds = 0;
+  while (myHp > 0 && oppHp > 0 && rounds < 20) {
+    const myDmg = Math.max(1, state.str * 2 - Math.floor(opp.def / 2) - Math.floor(Math.random()*3));
+    oppHp -= myDmg;
+    print(`You strike ${opp.name} for ${myDmg} damage.`);
+    if (oppHp <= 0) break;
+    const oppDmg = Math.max(1, opp.str * 2 - Math.floor(state.def / 2) - Math.floor(Math.random()*3));
+    myHp -= oppDmg;
+    print(`${opp.name} strikes back for ${oppDmg} damage.`);
+    rounds++;
+  }
+
+  if (myHp <= 0 && oppHp > 0) {
+    state.hp = Math.max(1, Math.floor(state.maxhp * 0.2));
+    print(`You were defeated by ${opp.name}! You retreat, bruised but alive.`);
+  } else {
+    const goldWon = 15 + opp.level * 3;
+    const xpWon = Math.round((10 + opp.level * 2) * (state.xpBonus || 1));
+    state.gold += goldWon;
+    state.xp += xpWon;
+    state.kills += 1;
+    print(`Victory! You defeated ${opp.name}. +${goldWon} gold, +${xpWon} XP.`);
+    if (state.xp >= state.xpNext) {
+      state.level++;
+      state.xp -= state.xpNext;
+      state.xpNext = Math.floor(state.xpNext * 1.4);
+      state.maxhp += 5;
+      state.hp = state.maxhp;
+      state.str += 1; state.def += 1;
+      print(`*** LEVEL UP! You are now level ${state.level}. ***`);
+    }
+  }
+  render();
+}
+
+function exportQueue() {
+  const queue = localStorage.getItem('tri_redemption_queue') || '[]';
+  const blob = new Blob([queue], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'tri_redemption_queue.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function tryAutoConnect() {
+  if (window.solana && window.solana.isPhantom) {
+    try {
+      const resp = await window.solana.connect({ onlyIfTrusted: true });
+      walletPubkey = resp.publicKey.toString();
+      document.getElementById('wallet-status').textContent = `Connected: ${walletPubkey.slice(0,4)}...${walletPubkey.slice(-4)}`;
+      document.getElementById('connectBtn').textContent = "Wallet Connected";
+      document.getElementById('connectBtn').disabled = true;
+      document.getElementById('redeemBtn').disabled = false;
+    } catch (e) { /* not previously trusted, ignore */ }
+  }
+}
+
+setInterval(() => {
+  if (state && state.stamina < state.maxStamina) {
+    state.stamina = Math.min(state.maxStamina, state.stamina + (state.staGain || 1));
+    render();
+  }
+}, 6000);
+
+const hadSave = load();
+if (hadSave) {
+  render();
+  tryAutoConnect();
+} else {
+  renderHeroSelect();
+}
+</script>
+</body>
+</html>
