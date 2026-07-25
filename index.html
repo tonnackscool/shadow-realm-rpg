@@ -44,9 +44,6 @@
     <button id="redeemBtn" onclick="redeemGold()" disabled>Redeem Gold for TRI</button>
   </div>
   <div id="redeemInfo" style="color:#7d8590;margin-top:6px;">Rate: 100 gold = 1 TRI. Requires wallet connection.</div>
-  <div class="btnrow" style="margin-top:8px;">
-    <button onclick="exportQueue()">Export Redemption Queue (JSON)</button>
-  </div>
 </div>
 <div id="rank">Rank: -- | Level 1</div>
 <div id="stats"></div>
@@ -229,25 +226,30 @@ async function connectWallet() {
   }
 }
 
-function redeemGold() {
+async function redeemGold() {
   if (!walletPubkey) { alert("Connect your wallet first."); return; }
+  if (!currentUser) { alert("You must be logged in to redeem."); return; }
   if (state.gold < TRI_RATE) { print(`You need at least ${TRI_RATE} gold to redeem 1 TRI. You have ${state.gold}.`); return; }
   const amount = Math.floor(state.gold / TRI_RATE);
   const goldSpent = amount * TRI_RATE;
   state.gold -= goldSpent;
 
-  const queue = JSON.parse(localStorage.getItem('tri_redemption_queue') || '[]');
-  queue.push({
-    wallet: walletPubkey,
-    triAmount: amount,
-    goldSpent: goldSpent,
-    timestamp: new Date().toISOString(),
-    status: "pending"
-  });
-  localStorage.setItem('tri_redemption_queue', JSON.stringify(queue));
-
-  print(`Redeemed ${goldSpent} gold for ${amount} TRI. Request queued for payout to ${walletPubkey.slice(0,4)}...${walletPubkey.slice(-4)}.`);
-  print(`Note: TRI is sent by the treasury payout script, not instantly. Check back after processing.`);
+  try {
+    await db.collection('tri_redemptions').add({
+      uid: currentUser.uid,
+      email: currentUser.email,
+      wallet: walletPubkey,
+      triAmount: amount,
+      goldSpent: goldSpent,
+      timestamp: new Date().toISOString(),
+      status: "pending"
+    });
+    print(`Redeemed ${goldSpent} gold for ${amount} TRI. Request sent for payout to ${walletPubkey.slice(0,4)}...${walletPubkey.slice(-4)}.`);
+    print(`Note: TRI is sent by the treasury payout script, not instantly. Check back after processing.`);
+  } catch (e) {
+    state.gold += goldSpent;
+    print(`Redemption failed to reach the server. Your gold was not spent. Try again.`);
+  }
   render();
 }
 
@@ -483,17 +485,6 @@ function fightPlayer(index) {
     }
   }
   render();
-}
-
-function exportQueue() {
-  const queue = localStorage.getItem('tri_redemption_queue') || '[]';
-  const blob = new Blob([queue], {type: 'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'tri_redemption_queue.json';
-  a.click();
-  URL.revokeObjectURL(url);
 }
 
 async function tryAutoConnect() {
