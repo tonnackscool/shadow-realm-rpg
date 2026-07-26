@@ -557,11 +557,10 @@ function getPlayerId() {
 }
 
 async function publishToArena() {
-  if (!state) return;
+  if (!state || !currentUser) return;
   try {
-    const pid = getPlayerId();
     const record = {
-      id: pid,
+      uid: currentUser.uid,
       name: state.name + (walletPubkey ? ` (${walletPubkey.slice(0,4)}...)` : ''),
       hero: state.hero,
       level: state.level,
@@ -571,8 +570,8 @@ async function publishToArena() {
       kills: state.kills,
       updated: new Date().toISOString()
     };
-    await window.storage.set('pvp:' + pid, JSON.stringify(record), true);
-  } catch (e) { /* storage unavailable, ignore */ }
+    await db.collection('pvp_public').doc(currentUser.uid).set(record);
+  } catch (e) { /* network hiccup, ignore - will retry on next render */ }
 }
 
 let arenaRecords = [];
@@ -604,19 +603,13 @@ async function refreshArena() {
   let records = [];
 
   try {
-    if (window.storage) {
-      const keys = await window.storage.list('pvp:', true);
-      const pid = getPlayerId();
-      const others = (keys.keys || []).filter(k => k !== 'pvp:' + pid);
-      for (const k of others) {
-        try {
-          const res = await window.storage.get(k, true);
-          if (res && res.value) records.push(JSON.parse(res.value));
-        } catch (e) {}
-      }
-    }
+    const snapshot = await db.collection('pvp_public').get();
+    snapshot.forEach(doc => {
+      const r = doc.data();
+      if (!currentUser || r.uid !== currentUser.uid) records.push(r);
+    });
   } catch (e) {
-    // Shared storage unavailable (expected on hosted deployments outside Claude) - continue with bots only.
+    print('Could not load real players right now. Showing AI opponents only.');
   }
 
   const bots = generateBots(state ? state.level : 1);
