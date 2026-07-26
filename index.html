@@ -87,6 +87,13 @@
   <button onclick="refreshBattleLog()">Refresh Battle Log</button>
 </div>
 <div id="battlelog-list" style="background:#161b22;border:1px solid #30363d;padding:10px;margin-bottom:12px;font-size:13px;"></div>
+<div class="section-title">Daily Tournament (Real Players Only)</div>
+<div style="font-size:12px;color:#7d8590;margin-bottom:6px;">Wins in the PvP Arena against real players count here. Bots and ambushes don't count. Standings reset daily. Top player at any time can claim the Champion bonus.</div>
+<div class="btnrow">
+  <button onclick="refreshTournament()">Refresh Standings</button>
+  <button onclick="claimTournament()">Claim Champion Reward</button>
+</div>
+<div id="tournament-list" style="background:#161b22;border:1px solid #30363d;padding:10px;margin-bottom:12px;font-size:13px;"></div>
 <div id="log"></div>
 </div>
 
@@ -214,7 +221,8 @@ function selectHero(id) {
     kills: 0,
     ownedItems: [],
     questDate: null, questProgress: 0, questClaimed: false,
-    lastBossDate: null
+    lastBossDate: null,
+    tournamentDate: null, tournamentWins: 0, tournamentClaimed: false
   };
   pendingUsername = null;
   document.getElementById('hero-select').style.display = 'none';
@@ -608,6 +616,9 @@ async function load() {
       if (state.questProgress === undefined) state.questProgress = 0;
       if (state.questClaimed === undefined) state.questClaimed = false;
       if (state.lastBossDate === undefined) state.lastBossDate = null;
+      if (state.tournamentDate === undefined) state.tournamentDate = null;
+      if (state.tournamentWins === undefined) state.tournamentWins = 0;
+      if (state.tournamentClaimed === undefined) state.tournamentClaimed = false;
       if (!state.username) state.username = currentUser.email ? currentUser.email.split('@')[0] : 'Adventurer';
       document.getElementById('hero-select').style.display = 'none';
       document.getElementById('game-ui').style.display = 'block';
@@ -645,6 +656,8 @@ async function publishToArena() {
       maxhp: state.maxhp,
       kills: state.kills,
       gold: state.gold,
+      tournamentDate: state.tournamentDate || null,
+      tournamentWins: state.tournamentWins || 0,
       updated: new Date().toISOString()
     };
     await db.collection('pvp_public').doc(currentUser.uid).set(record);
@@ -797,6 +810,16 @@ function fightPlayer(index) {
     print(`Victory! You defeated ${(opp.heroDisplay || opp.name)}. +${goldWon} gold, +${xpWon} XP.`);
     rollLoot();
     logBattle(opp, 'win');
+    if (opp.uid && !opp.isBot) {
+      const today = todayKey();
+      if (state.tournamentDate !== today) {
+        state.tournamentDate = today;
+        state.tournamentWins = 0;
+        state.tournamentClaimed = false;
+      }
+      state.tournamentWins += 1;
+      print(`Tournament win recorded! (${state.tournamentWins} today)`);
+    }
     if (state.xp >= state.xpNext) {
       state.level++;
       state.xp -= state.xpNext;
@@ -825,6 +848,76 @@ async function logBattle(opp, result, aiInitiated) {
       timestamp: new Date().toISOString()
     });
   } catch (e) { /* logging failure shouldn't interrupt gameplay */ }
+}
+
+async function refreshTournament() {
+  const listEl = document.getElementById('tournament-list');
+  if (!listEl) return;
+  listEl.innerHTML = 'Loading standings...';
+  const today = todayKey();
+  try {
+    const snapshot = await db.collection('pvp_public').get();
+    const players = [];
+    snapshot.forEach(doc => {
+      const p = doc.data();
+      if (p.tournamentDate === today && p.tournamentWins > 0) players.push(p);
+    });
+    players.sort((a, b) => b.tournamentWins - a.tournamentWins);
+    if (players.length === 0) {
+      listEl.innerHTML = 'No tournament wins recorded today yet. Fight real players in the arena to be first!';
+      return;
+    }
+    listEl.innerHTML = players.slice(0, 10).map((p, i) => {
+      const isYou = currentUser && p.uid === currentUser.uid;
+      return `
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #21262d;${isYou ? 'color:#e3b341;' : ''}">
+          <span>#${i+1} ${p.username || p.heroDisplay} ${isYou ? '(you)' : ''}</span>
+          <span>${p.tournamentWins} win${p.tournamentWins === 1 ? '' : 's'}</span>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    listEl.innerHTML = 'Could not load tournament standings right now.';
+  }
+}
+
+async function claimTournament() {
+  if (!state || !currentUser) return;
+  const today = todayKey();
+  if (state.tournamentDate !== today || state.tournamentWins <= 0) {
+    print('You have no tournament wins today yet.');
+    return;
+  }
+  if (state.tournamentClaimed) {
+    print('You already claimed today\'s Champion reward.');
+    return;
+  }
+  try {
+    const snapshot = await db.collection('pvp_public').get();
+    let topWins = 0, topUid = null;
+    snapshot.forEach(doc => {
+      const p = doc.data();
+      if (p.tournamentDate === today && p.tournamentWins > topWins) {
+        topWins = p.tournamentWins;
+        topUid = p.uid;
+      }
+    });
+    if (topUid !== currentUser.uid) {
+      print(`You're not currently #1 today (top score: ${topWins} wins). Keep fighting real players to take the lead!`);
+      return;
+    }
+  } catch (e) {
+    print('Could not verify tournament standings right now. Try again shortly.');
+    return;
+  }
+  state.tournamentClaimed = true;
+  const goldWon = 150;
+  const xpWon = Math.round(60 * (state.xpBonus || 1));
+  state.gold += goldWon;
+  state.xp += xpWon;
+  print(`*** Daily Tournament Champion! +${goldWon} gold, +${xpWon} XP. ***`);
+  checkLevelUp();
+  render();
 }
 
 async function refreshBattleLog() {
