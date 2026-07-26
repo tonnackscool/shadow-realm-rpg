@@ -638,6 +638,7 @@ async function publishToArena() {
       name: (state.username || 'Adventurer') + ' the ' + state.name + (walletPubkey ? ` (${walletPubkey.slice(0,4)}...)` : ''),
       username: state.username || 'Adventurer',
       hero: state.hero,
+      heroDisplay: state.name,
       level: state.level,
       str: state.str,
       def: state.def,
@@ -652,24 +653,26 @@ async function publishToArena() {
 
 let arenaRecords = [];
 
-const BOT_NAMES = ['Grimjaw', 'Ashen Vale', 'Nyx Shadowbane', 'Korrath the Grim', 'Wren Ironfoot', 'Selene Duskwalker', 'Thorne Blackwood', 'Mira Stormcaller', 'Draven Ashfall', 'Kael Nightwind'];
-
 function generateBots(playerLevel) {
   const bots = [];
-  const count = 3;
-  for (let i = 0; i < count; i++) {
-    const lvl = Math.max(1, playerLevel + Math.floor(Math.random() * 5) - 2);
-    const name = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)] + ' (AI)';
+  // 2 normal-level bots (close to player's own level), 1 very high level bot (tough challenge)
+  const levels = [
+    Math.max(1, playerLevel + Math.floor(Math.random() * 3) - 1),
+    Math.max(1, playerLevel + Math.floor(Math.random() * 3) - 1),
+    playerLevel + 8 + Math.floor(Math.random() * 5)
+  ];
+  levels.forEach((lvl, i) => {
+    const heroClass = HEROES[Math.floor(Math.random() * HEROES.length)];
     bots.push({
       id: 'bot_' + i + '_' + lvl,
-      name: name,
+      heroDisplay: heroClass.name + (i === 2 ? ' (Elite)' : ''),
       level: lvl,
       str: 4 + lvl * 2 + Math.floor(Math.random() * 3),
       def: 4 + lvl * 2 + Math.floor(Math.random() * 3),
       maxhp: 25 + lvl * 6,
       isBot: true
     });
-  }
+  });
   return bots;
 }
 
@@ -695,7 +698,7 @@ async function refreshArena() {
 
   listEl.innerHTML = arenaRecords.map((r, i) => `
     <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #21262d;padding:6px 0;">
-      <span>${r.name} — Lvl ${r.level} (STR ${r.str}/DEF ${r.def})</span>
+      <span>${r.heroDisplay || r.hero}</span>
       <button onclick="fightPlayer(${i})">Challenge</button>
     </div>
   `).join('');
@@ -762,18 +765,18 @@ function fightPlayer(index) {
   if (state.gold < 10) { print(`Entering the arena costs 10 gold. You have ${state.gold}.`); return; }
   state.stamina -= 15;
   state.gold -= 10;
-  print(`You pay 10 gold to enter the arena and challenge ${opp.name} to a duel!`);
+  print(`You pay 10 gold to enter the arena and challenge ${(opp.heroDisplay || opp.name)} to a duel!`);
 
   let myHp = state.hp, oppHp = opp.maxhp;
   let rounds = 0;
   while (myHp > 0 && oppHp > 0 && rounds < 20) {
     const myDmg = Math.max(1, state.str * 2 - Math.floor(opp.def / 2) - Math.floor(Math.random()*3));
     oppHp -= myDmg;
-    print(`You strike ${opp.name} for ${myDmg} damage.`);
+    print(`You strike ${(opp.heroDisplay || opp.name)} for ${myDmg} damage.`);
     if (oppHp <= 0) break;
     const oppDmg = Math.max(1, opp.str * 2 - Math.floor(state.def / 2) - Math.floor(Math.random()*3));
     myHp -= oppDmg;
-    print(`${opp.name} strikes back for ${oppDmg} damage.`);
+    print(`${(opp.heroDisplay || opp.name)} strikes back for ${oppDmg} damage.`);
     rounds++;
   }
 
@@ -783,7 +786,7 @@ function fightPlayer(index) {
     const xpLost = Math.min(state.xp, Math.floor(state.xp * 0.15));
     state.gold -= goldLost;
     state.xp -= xpLost;
-    print(`You were defeated by ${opp.name}! You retreat, bruised but alive. -${goldLost} gold, -${xpLost} XP.`);
+    print(`You were defeated by ${(opp.heroDisplay || opp.name)}! You retreat, bruised but alive. -${goldLost} gold, -${xpLost} XP.`);
     logBattle(opp, 'loss');
   } else {
     const goldWon = 15 + opp.level * 3;
@@ -791,7 +794,7 @@ function fightPlayer(index) {
     state.gold += goldWon;
     state.xp += xpWon;
     state.kills += 1;
-    print(`Victory! You defeated ${opp.name}. +${goldWon} gold, +${xpWon} XP.`);
+    print(`Victory! You defeated ${(opp.heroDisplay || opp.name)}. +${goldWon} gold, +${xpWon} XP.`);
     rollLoot();
     logBattle(opp, 'win');
     if (state.xp >= state.xpNext) {
@@ -814,7 +817,7 @@ async function logBattle(opp, result) {
       attackerUid: currentUser.uid,
       attackerName: state.username || state.name,
       defenderUid: opp.uid || null,
-      defenderName: opp.name,
+      defenderName: (opp.heroDisplay || opp.name),
       isBot: !!opp.isBot,
       result: result,
       participants: opp.uid ? [currentUser.uid, opp.uid] : [currentUser.uid],
