@@ -74,6 +74,7 @@
 <div class="section-title">PvP Arena</div>
 <div class="btnrow">
   <button onclick="refreshArena()">Refresh Opponent List</button>
+  <button onclick="autoAttack()">Auto Attack (fight until low STA)</button>
 </div>
 <div id="arena-list" style="background:#161b22;border:1px solid #30363d;padding:10px;margin-bottom:12px;font-size:13px;"></div>
 <div class="section-title">Top Players</div>
@@ -81,6 +82,11 @@
   <button onclick="refreshLeaderboard()">Refresh Leaderboard</button>
 </div>
 <div id="leaderboard-list" style="background:#161b22;border:1px solid #30363d;padding:10px;margin-bottom:12px;font-size:13px;"></div>
+<div class="section-title">Battle Log</div>
+<div class="btnrow">
+  <button onclick="refreshBattleLog()">Refresh Battle Log</button>
+</div>
+<div id="battlelog-list" style="background:#161b22;border:1px solid #30363d;padding:10px;margin-bottom:12px;font-size:13px;"></div>
 <div id="log"></div>
 </div>
 
@@ -370,10 +376,41 @@ const SHOP_ITEMS = [
   { id: 'vigor_ring', name: 'Ring of Vigor', desc: 'Permanently +15 Max HP.', price: 200, type: 'equipment', maxhp: 15 }
 ];
 
+const FEATURED_ITEMS = [
+  { id: 'dragon_fang', name: 'Dragon Fang Blade', desc: 'Legendary weapon. Permanently +8 STR.', price: 900, type: 'equipment', str: 8 },
+  { id: 'titan_plate', name: 'Titan Plate Armor', desc: 'Legendary armor. Permanently +8 DEF.', price: 900, type: 'equipment', def: 8 },
+  { id: 'phoenix_heart', name: 'Phoenix Heart Amulet', desc: 'Legendary relic. Permanently +40 Max HP.', price: 1000, type: 'equipment', maxhp: 40 },
+  { id: 'warlord_crown', name: "Warlord's Crown", desc: 'Legendary crown. Permanently +5 STR, +5 DEF.', price: 1300, type: 'equipment', str: 5, def: 5 },
+  { id: 'elixir_of_ages', name: 'Elixir of Ages', desc: 'Rare tonic. Permanently +20 Max HP, +2 STR, +2 DEF.', price: 1100, type: 'equipment', maxhp: 20, str: 2, def: 2 }
+];
+
+function getFeaturedItem() {
+  const d = new Date();
+  const seed = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+  return FEATURED_ITEMS[seed % FEATURED_ITEMS.length];
+}
+
+function findShopItem(itemId) {
+  return SHOP_ITEMS.find(i => i.id === itemId) || FEATURED_ITEMS.find(i => i.id === itemId);
+}
+
 function renderShop() {
   const box = document.getElementById('shop-box');
   if (!box || !state) return;
-  box.innerHTML = SHOP_ITEMS.map(item => {
+  const featured = getFeaturedItem();
+  const featuredOwned = state.ownedItems.includes(featured.id);
+
+  const featuredHtml = `
+    <div style="border:1px solid #e3b341;border-radius:6px;padding:10px;margin-bottom:10px;background:#1c1608;">
+      <div style="color:#e3b341;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">★ Today's Featured Item ★</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span><b style="color:#e3b341;">${featured.name}</b> — ${featured.desc} <span style="color:#7d8590;">(${featured.price}g)</span></span>
+        <button ${featuredOwned ? 'disabled' : ''} onclick="buyItem('${featured.id}')">${featuredOwned ? 'Owned' : 'Buy'}</button>
+      </div>
+    </div>
+  `;
+
+  const regularHtml = SHOP_ITEMS.map(item => {
     const owned = item.type === 'equipment' && state.ownedItems.includes(item.id);
     return `
       <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #21262d;padding:6px 0;">
@@ -382,10 +419,12 @@ function renderShop() {
       </div>
     `;
   }).join('');
+
+  box.innerHTML = featuredHtml + regularHtml;
 }
 
 function buyItem(itemId) {
-  const item = SHOP_ITEMS.find(i => i.id === itemId);
+  const item = findShopItem(itemId);
   if (!item || !state) return;
   if (item.type === 'equipment' && state.ownedItems.includes(itemId)) { print(`You already own the ${item.name}.`); return; }
   if (state.gold < item.price) { print(`Not enough gold for ${item.name}. Need ${item.price}, have ${state.gold}.`); return; }
@@ -617,7 +656,7 @@ const BOT_NAMES = ['Grimjaw', 'Ashen Vale', 'Nyx Shadowbane', 'Korrath the Grim'
 
 function generateBots(playerLevel) {
   const bots = [];
-  const count = 5;
+  const count = 3;
   for (let i = 0; i < count; i++) {
     const lvl = Math.max(1, playerLevel + Math.floor(Math.random() * 5) - 2);
     const name = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)] + ' (AI)';
@@ -689,13 +728,41 @@ async function refreshLeaderboard() {
   }
 }
 
+async function autoAttack() {
+  if (!state) return;
+  if (arenaRecords.length === 0) {
+    await refreshArena();
+  }
+  if (arenaRecords.length === 0) {
+    print('No opponents available to auto-attack.');
+    return;
+  }
+  print('--- Auto Attack started ---');
+  let fights = 0;
+  const maxFights = 10;
+
+  function nextFight() {
+    if (!state || state.stamina < 15 || fights >= maxFights) {
+      print(state && state.stamina < 15 ? 'Auto Attack stopped: stamina too low.' : '--- Auto Attack finished ---');
+      return;
+    }
+    const idx = Math.floor(Math.random() * arenaRecords.length);
+    fightPlayer(idx);
+    fights++;
+    setTimeout(nextFight, 600);
+  }
+  nextFight();
+}
+
 function fightPlayer(index) {
   const opp = arenaRecords[index];
   if (!opp) return;
   if (!state) return;
   if (state.stamina < 15) { print(`Not enough stamina to enter the arena (need 15).`); return; }
+  if (state.gold < 10) { print(`Entering the arena costs 10 gold. You have ${state.gold}.`); return; }
   state.stamina -= 15;
-  print(`You challenge ${opp.name} to a duel!`);
+  state.gold -= 10;
+  print(`You pay 10 gold to enter the arena and challenge ${opp.name} to a duel!`);
 
   let myHp = state.hp, oppHp = opp.maxhp;
   let rounds = 0;
@@ -712,7 +779,12 @@ function fightPlayer(index) {
 
   if (myHp <= 0 && oppHp > 0) {
     state.hp = Math.max(1, Math.floor(state.maxhp * 0.2));
-    print(`You were defeated by ${opp.name}! You retreat, bruised but alive.`);
+    const goldLost = Math.min(state.gold, 10 + Math.floor(Math.random() * 15));
+    const xpLost = Math.min(state.xp, Math.floor(state.xp * 0.15));
+    state.gold -= goldLost;
+    state.xp -= xpLost;
+    print(`You were defeated by ${opp.name}! You retreat, bruised but alive. -${goldLost} gold, -${xpLost} XP.`);
+    logBattle(opp, 'loss');
   } else {
     const goldWon = 15 + opp.level * 3;
     const xpWon = Math.round((10 + opp.level * 2) * (state.xpBonus || 1));
@@ -720,6 +792,8 @@ function fightPlayer(index) {
     state.xp += xpWon;
     state.kills += 1;
     print(`Victory! You defeated ${opp.name}. +${goldWon} gold, +${xpWon} XP.`);
+    rollLoot();
+    logBattle(opp, 'win');
     if (state.xp >= state.xpNext) {
       state.level++;
       state.xp -= state.xpNext;
@@ -731,6 +805,60 @@ function fightPlayer(index) {
     }
   }
   render();
+}
+
+async function logBattle(opp, result) {
+  if (!currentUser || !state) return;
+  try {
+    await db.collection('pvp_battles').add({
+      attackerUid: currentUser.uid,
+      attackerName: state.username || state.name,
+      defenderUid: opp.uid || null,
+      defenderName: opp.name,
+      isBot: !!opp.isBot,
+      result: result,
+      participants: opp.uid ? [currentUser.uid, opp.uid] : [currentUser.uid],
+      timestamp: new Date().toISOString()
+    });
+  } catch (e) { /* logging failure shouldn't interrupt gameplay */ }
+}
+
+async function refreshBattleLog() {
+  const listEl = document.getElementById('battlelog-list');
+  if (!listEl) return;
+  if (!currentUser) { listEl.innerHTML = 'Log in to see your battle log.'; return; }
+  listEl.innerHTML = 'Loading battle log...';
+  try {
+    const snapshot = await db.collection('pvp_battles')
+      .where('participants', 'array-contains', currentUser.uid)
+      .get();
+    const battles = [];
+    snapshot.forEach(doc => battles.push(doc.data()));
+    battles.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    const recent = battles.slice(0, 15);
+    if (recent.length === 0) {
+      listEl.innerHTML = 'No battles recorded yet. Fight in the PvP Arena to start your log.';
+      return;
+    }
+    listEl.innerHTML = recent.map(b => {
+      const isYouAttacker = b.attackerUid === currentUser.uid;
+      const time = new Date(b.timestamp).toLocaleString();
+      const youWon = isYouAttacker ? (b.result === 'win') : (b.result === 'loss');
+      const line = isYouAttacker
+        ? `You attacked ${b.defenderName}`
+        : `${b.attackerName} attacked you`;
+      const outcome = youWon ? 'WIN' : 'LOSS';
+      const color = youWon ? '#3fb950' : '#f85149';
+      return `
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #21262d;">
+          <span>${line}</span>
+          <span><b style="color:${color};">${outcome}</b> — <span style="color:#7d8590;">${time}</span></span>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    listEl.innerHTML = 'Could not load battle log right now.';
+  }
 }
 
 async function tryAutoConnect() {
