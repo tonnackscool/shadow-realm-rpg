@@ -23,7 +23,8 @@
 <h1>Shadow Realm</h1>
 <div id="login-screen" style="background:#161b22;border:1px solid #30363d;padding:12px;margin-bottom:12px;">
   <div class="section-title" style="margin-top:0;">Log in or register</div>
-  <div style="font-size:12px;color:#7d8590;margin-bottom:10px;">Use any email and password. This account is stored in this browser only — it won't follow you to another device or browser.</div>
+  <div style="font-size:12px;color:#7d8590;margin-bottom:10px;">Register with any email, password, and a display name. Your account and progress follow you across any device.</div>
+  <input id="login-username" type="text" placeholder="Display name (shown to other players)" maxlength="20" style="width:100%;padding:8px;margin-bottom:8px;background:#0b0d10;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;box-sizing:border-box;">
   <input id="login-email" type="email" placeholder="Email" style="width:100%;padding:8px;margin-bottom:8px;background:#0b0d10;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;box-sizing:border-box;">
   <input id="login-password" type="password" placeholder="Password" style="width:100%;padding:8px;margin-bottom:8px;background:#0b0d10;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;box-sizing:border-box;">
   <div class="btnrow">
@@ -98,12 +99,17 @@ const db = firebase.firestore();
 <script>
 let currentUser = null;
 
+let pendingUsername = null;
+
 function registerAccount() {
+  const username = document.getElementById('login-username').value.trim();
   const email = document.getElementById('login-email').value.trim().toLowerCase();
   const pass = document.getElementById('login-password').value;
   const msg = document.getElementById('login-msg');
+  if (!username) { msg.style.color = '#f85149'; msg.textContent = 'Choose a display name.'; return; }
   if (!email || !pass) { msg.style.color = '#f85149'; msg.textContent = 'Enter an email and password.'; return; }
   if (pass.length < 6) { msg.style.color = '#f85149'; msg.textContent = 'Password must be at least 6 characters.'; return; }
+  pendingUsername = username;
   msg.style.color = '#7d8590';
   msg.textContent = 'Creating account...';
   auth.createUserWithEmailAndPassword(email, pass)
@@ -184,9 +190,11 @@ function renderHeroSelect() {
 
 function selectHero(id) {
   const h = HEROES.find(x => x.id === id);
+  const fallbackName = currentUser && currentUser.email ? currentUser.email.split('@')[0] : 'Adventurer';
   state = {
     hero: h.id,
     name: h.name,
+    username: pendingUsername || fallbackName,
     level: 1, xp: 0, xpNext: 20,
     str: h.str, def: h.def, maxhp: h.maxhp, hp: h.maxhp,
     gold: 0,
@@ -197,6 +205,7 @@ function selectHero(id) {
     questDate: null, questProgress: 0, questClaimed: false,
     lastBossDate: null
   };
+  pendingUsername = null;
   document.getElementById('hero-select').style.display = 'none';
   document.getElementById('game-ui').style.display = 'block';
   log.textContent = "";
