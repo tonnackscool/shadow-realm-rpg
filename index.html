@@ -58,10 +58,18 @@
 <div class="section-title">Actions</div>
 <div class="btnrow">
   <button onclick="fightMonster()">Hunt Monster (-10 STA)</button>
-  <button onclick="rest()">Rest (free, small STA regen)</button>
+  <button onclick="rest()">Rest (-20 gold, small STA/HP)</button>
   <button onclick="resetGame()">Reset Character</button>
   <button onclick="logoutAccount()">Log out</button>
 </div>
+<div class="section-title">Daily Quest</div>
+<div id="quest-box" style="background:#161b22;border:1px solid #30363d;padding:10px;margin-bottom:12px;font-size:13px;"></div>
+<div class="section-title">Boss Fight</div>
+<div class="btnrow">
+  <button onclick="fightBoss()">Challenge Today's Boss (-30 STA)</button>
+</div>
+<div class="section-title">Shop</div>
+<div id="shop-box" style="background:#161b22;border:1px solid #30363d;padding:10px;margin-bottom:12px;font-size:13px;"></div>
 <div class="section-title">PvP Arena</div>
 <div class="btnrow">
   <button onclick="refreshArena()">Refresh Opponent List</button>
@@ -184,7 +192,10 @@ function selectHero(id) {
     gold: 0,
     stamina: 100, maxStamina: 100,
     staGain: h.staGain, xpBonus: h.xpBonus || 1,
-    kills: 0
+    kills: 0,
+    ownedItems: [],
+    questDate: null, questProgress: 0, questClaimed: false,
+    lastBossDate: null
   };
   document.getElementById('hero-select').style.display = 'none';
   document.getElementById('game-ui').style.display = 'block';
@@ -290,6 +301,8 @@ function render() {
   document.getElementById('bar').style.width = pct + '%';
   document.getElementById('bar').style.background = pct < 25 ? '#f85149' : (pct < 60 ? '#e3b341' : '#3fb950');
   save();
+  renderShop();
+  renderQuest();
   publishToArena();
 }
 
@@ -310,9 +323,138 @@ function train(type) {
 }
 
 function rest() {
+  if (state.gold < 20) { print(`Resting costs 20 gold. You have ${state.gold}.`); return; }
+  state.gold -= 20;
   state.stamina = Math.min(state.maxStamina, state.stamina + 15);
   state.hp = Math.min(state.maxhp, state.hp + 5);
-  print(`You rest by the fire. Stamina and HP recover slightly.`);
+  print(`You pay 20 gold to rest by the fire. Stamina and HP recover slightly.`);
+  render();
+}
+
+const SHOP_ITEMS = [
+  { id: 'potion_hp', name: 'Health Potion', desc: 'Instantly restores 25 HP.', price: 30, type: 'consumable' },
+  { id: 'potion_sta', name: 'Stamina Potion', desc: 'Instantly restores 30 Stamina.', price: 25, type: 'consumable' },
+  { id: 'iron_sword', name: 'Iron Sword', desc: 'Permanently +3 STR.', price: 150, type: 'equipment', str: 3 },
+  { id: 'steel_shield', name: 'Steel Shield', desc: 'Permanently +3 DEF.', price: 150, type: 'equipment', def: 3 },
+  { id: 'vigor_ring', name: 'Ring of Vigor', desc: 'Permanently +15 Max HP.', price: 200, type: 'equipment', maxhp: 15 }
+];
+
+function renderShop() {
+  const box = document.getElementById('shop-box');
+  if (!box || !state) return;
+  box.innerHTML = SHOP_ITEMS.map(item => {
+    const owned = item.type === 'equipment' && state.ownedItems.includes(item.id);
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #21262d;padding:6px 0;">
+        <span><b style="color:#e3b341;">${item.name}</b> — ${item.desc} <span style="color:#7d8590;">(${item.price}g)</span></span>
+        <button ${owned ? 'disabled' : ''} onclick="buyItem('${item.id}')">${owned ? 'Owned' : 'Buy'}</button>
+      </div>
+    `;
+  }).join('');
+}
+
+function buyItem(itemId) {
+  const item = SHOP_ITEMS.find(i => i.id === itemId);
+  if (!item || !state) return;
+  if (item.type === 'equipment' && state.ownedItems.includes(itemId)) { print(`You already own the ${item.name}.`); return; }
+  if (state.gold < item.price) { print(`Not enough gold for ${item.name}. Need ${item.price}, have ${state.gold}.`); return; }
+  state.gold -= item.price;
+  if (item.type === 'consumable') {
+    if (item.id === 'potion_hp') { state.hp = Math.min(state.maxhp, state.hp + 25); print(`You drink a Health Potion. +25 HP.`); }
+    if (item.id === 'potion_sta') { state.stamina = Math.min(state.maxStamina, state.stamina + 30); print(`You drink a Stamina Potion. +30 Stamina.`); }
+  } else {
+    state.ownedItems.push(itemId);
+    if (item.str) state.str += item.str;
+    if (item.def) state.def += item.def;
+    if (item.maxhp) { state.maxhp += item.maxhp; state.hp += item.maxhp; }
+    print(`You purchase the ${item.name}. ${item.desc}`);
+  }
+  render();
+}
+
+function todayKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;
+}
+
+function renderQuest() {
+  const box = document.getElementById('quest-box');
+  if (!box || !state) return;
+  const today = todayKey();
+  if (state.questDate !== today) {
+    state.questDate = today;
+    state.questProgress = 0;
+    state.questClaimed = false;
+  }
+  const target = 3;
+  const done = state.questProgress >= target;
+  box.innerHTML = `
+    <div>Defeat ${target} monsters today: <b style="color:${done ? '#3fb950' : '#e3b341'};">${Math.min(state.questProgress, target)}/${target}</b></div>
+    <div style="color:#7d8590;margin:4px 0;">Reward: 50 gold, 20 XP</div>
+    <button ${(!done || state.questClaimed) ? 'disabled' : ''} onclick="claimQuest()">${state.questClaimed ? 'Claimed' : 'Claim Reward'}</button>
+  `;
+}
+
+function claimQuest() {
+  if (!state || state.questProgress < 3 || state.questClaimed) return;
+  state.questClaimed = true;
+  state.gold += 50;
+  state.xp += Math.round(20 * (state.xpBonus || 1));
+  print(`Daily quest complete! +50 gold, +20 XP.`);
+  checkLevelUp();
+  render();
+}
+
+function checkLevelUp() {
+  if (state.xp >= state.xpNext) {
+    state.level++;
+    state.xp -= state.xpNext;
+    state.xpNext = Math.floor(state.xpNext * 1.4);
+    state.maxhp += 5;
+    state.hp = state.maxhp;
+    state.str += 1; state.def += 1;
+    print(`*** LEVEL UP! You are now level ${state.level}. ***`);
+  }
+}
+
+function fightBoss() {
+  if (!state) return;
+  const today = todayKey();
+  if (state.lastBossDate === today) { print(`You've already challenged today's boss. Come back tomorrow.`); return; }
+  if (state.stamina < 30) { print(`Not enough stamina to challenge the boss (need 30).`); return; }
+  state.stamina -= 30;
+  state.lastBossDate = today;
+
+  const boss = {
+    name: `${['Ancient', 'Corrupted', 'Molten', 'Frozen', 'Shadow'][state.level % 5]} Warlord`,
+    hp: 60 + state.level * 15,
+    atk: 8 + state.level * 2
+  };
+  print(`You challenge the ${boss.name}!`);
+  let bossHp = boss.hp, myHp = state.hp;
+  let rounds = 0;
+  while (bossHp > 0 && myHp > 0 && rounds < 25) {
+    const dmg = Math.max(1, state.str * 2 - Math.floor(Math.random()*3));
+    bossHp -= dmg;
+    print(`You strike the ${boss.name} for ${dmg} damage.`);
+    if (bossHp <= 0) break;
+    const bdmg = Math.max(1, boss.atk - Math.floor(state.def/2));
+    myHp -= bdmg;
+    print(`The ${boss.name} hits you for ${bdmg} damage.`);
+    rounds++;
+  }
+  if (myHp <= 0) {
+    state.hp = Math.max(1, Math.floor(state.maxhp * 0.2));
+    print(`The ${boss.name} was too strong. You retreat, badly wounded.`);
+  } else {
+    const goldWon = 80 + state.level * 10;
+    const xpWon = Math.round((40 + state.level * 5) * (state.xpBonus || 1));
+    state.gold += goldWon;
+    state.xp += xpWon;
+    state.kills += 1;
+    print(`Victory! You defeated the ${boss.name}! +${goldWon} gold, +${xpWon} XP.`);
+    checkLevelUp();
+  }
   render();
 }
 
@@ -346,6 +488,7 @@ function fightMonster() {
     state.kills++;
     state.xp += Math.round(m.xp * (state.xpBonus || 1));
     state.gold += m.gold;
+    if (state.questDate === todayKey()) state.questProgress = (state.questProgress || 0) + 1;
     print(`You defeated the ${m.name}! +${m.xp} XP, +${m.gold} gold.`);
     if (state.xp >= state.xpNext) {
       state.level++;
@@ -387,6 +530,11 @@ async function load() {
     const doc = await db.collection('saves').doc(currentUser.uid).get();
     if (doc.exists) {
       state = doc.data();
+      if (!state.ownedItems) state.ownedItems = [];
+      if (state.questDate === undefined) state.questDate = null;
+      if (state.questProgress === undefined) state.questProgress = 0;
+      if (state.questClaimed === undefined) state.questClaimed = false;
+      if (state.lastBossDate === undefined) state.lastBossDate = null;
       document.getElementById('hero-select').style.display = 'none';
       document.getElementById('game-ui').style.display = 'block';
       print("Welcome back, adventurer. Your progress was restored.");
@@ -429,35 +577,59 @@ async function publishToArena() {
 
 let arenaRecords = [];
 
+const BOT_NAMES = ['Grimjaw', 'Ashen Vale', 'Nyx Shadowbane', 'Korrath the Grim', 'Wren Ironfoot', 'Selene Duskwalker', 'Thorne Blackwood', 'Mira Stormcaller', 'Draven Ashfall', 'Kael Nightwind'];
+
+function generateBots(playerLevel) {
+  const bots = [];
+  const count = 5;
+  for (let i = 0; i < count; i++) {
+    const lvl = Math.max(1, playerLevel + Math.floor(Math.random() * 5) - 2);
+    const name = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)] + ' (AI)';
+    bots.push({
+      id: 'bot_' + i + '_' + lvl,
+      name: name,
+      level: lvl,
+      str: 4 + lvl * 2 + Math.floor(Math.random() * 3),
+      def: 4 + lvl * 2 + Math.floor(Math.random() * 3),
+      maxhp: 25 + lvl * 6,
+      isBot: true
+    });
+  }
+  return bots;
+}
+
 async function refreshArena() {
   const listEl = document.getElementById('arena-list');
   listEl.innerHTML = 'Loading opponents...';
+  let records = [];
+
   try {
-    const keys = await window.storage.list('pvp:', true);
-    const pid = getPlayerId();
-    const others = (keys.keys || []).filter(k => k !== 'pvp:' + pid);
-    if (others.length === 0) {
-      listEl.innerHTML = 'No other players found yet. Play, level up, and check back — other players who connect will appear here.';
-      return;
+    if (window.storage) {
+      const keys = await window.storage.list('pvp:', true);
+      const pid = getPlayerId();
+      const others = (keys.keys || []).filter(k => k !== 'pvp:' + pid);
+      for (const k of others) {
+        try {
+          const res = await window.storage.get(k, true);
+          if (res && res.value) records.push(JSON.parse(res.value));
+        } catch (e) {}
+      }
     }
-    const records = [];
-    for (const k of others) {
-      try {
-        const res = await window.storage.get(k, true);
-        if (res && res.value) records.push(JSON.parse(res.value));
-      } catch (e) {}
-    }
-    records.sort((a,b) => b.level - a.level);
-    arenaRecords = records.slice(0, 15);
-    listEl.innerHTML = arenaRecords.map((r, i) => `
-      <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #21262d;padding:6px 0;">
-        <span>${r.name} — Lvl ${r.level} (STR ${r.str}/DEF ${r.def})</span>
-        <button onclick="fightPlayer(${i})">Challenge</button>
-      </div>
-    `).join('');
   } catch (e) {
-    listEl.innerHTML = 'Arena unavailable right now. Try again shortly.';
+    // Shared storage unavailable (expected on hosted deployments outside Claude) - continue with bots only.
   }
+
+  const bots = generateBots(state ? state.level : 1);
+  records = records.concat(bots);
+  records.sort((a,b) => b.level - a.level);
+  arenaRecords = records.slice(0, 20);
+
+  listEl.innerHTML = arenaRecords.map((r, i) => `
+    <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #21262d;padding:6px 0;">
+      <span>${r.name} — Lvl ${r.level} (STR ${r.str}/DEF ${r.def})</span>
+      <button onclick="fightPlayer(${i})">Challenge</button>
+    </div>
+  `).join('');
 }
 
 function fightPlayer(index) {
