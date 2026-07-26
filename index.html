@@ -810,15 +810,16 @@ function fightPlayer(index) {
   render();
 }
 
-async function logBattle(opp, result) {
+async function logBattle(opp, result, aiInitiated) {
   if (!currentUser || !state) return;
   try {
     await db.collection('pvp_battles').add({
       attackerUid: currentUser.uid,
-      attackerName: state.username || state.name,
+      attackerName: aiInitiated ? (opp.heroDisplay || opp.name) : (state.username || state.name),
       defenderUid: opp.uid || null,
-      defenderName: (opp.heroDisplay || opp.name),
+      defenderName: aiInitiated ? (state.username || state.name) : (opp.heroDisplay || opp.name),
       isBot: !!opp.isBot,
+      aiInitiated: !!aiInitiated,
       result: result,
       participants: opp.uid ? [currentUser.uid, opp.uid] : [currentUser.uid],
       timestamp: new Date().toISOString()
@@ -844,12 +845,12 @@ async function refreshBattleLog() {
       return;
     }
     listEl.innerHTML = recent.map(b => {
-      const isYouAttacker = b.attackerUid === currentUser.uid;
+      const isYouAttacker = !b.aiInitiated;
       const time = new Date(b.timestamp).toLocaleString();
       const youWon = isYouAttacker ? (b.result === 'win') : (b.result === 'loss');
       const line = isYouAttacker
         ? `You attacked ${b.defenderName}`
-        : `${b.attackerName} attacked you`;
+        : `${b.attackerName} ambushed you`;
       const outcome = youWon ? 'WIN' : 'LOSS';
       const color = youWon ? '#3fb950' : '#f85149';
       return `
@@ -912,6 +913,7 @@ function aiAmbush() {
     const goldLost = Math.min(state.gold, 5 + Math.floor(Math.random() * 15));
     state.gold -= goldLost;
     print(`You were overwhelmed! -${goldLost} gold. You survive, badly hurt.`);
+    logBattle(bot, 'win', true); // bot (attacker) won
   } else {
     state.hp = myHp;
     const goldWon = 10 + lvl * 2;
@@ -919,6 +921,7 @@ function aiAmbush() {
     state.gold += goldWon;
     state.xp += xpWon;
     print(`You fought off the ambush! +${goldWon} gold, +${xpWon} XP.`);
+    logBattle(bot, 'loss', true); // bot (attacker) lost
     checkLevelUp();
   }
   render();
