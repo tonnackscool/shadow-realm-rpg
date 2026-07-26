@@ -76,6 +76,11 @@
   <button onclick="refreshArena()">Refresh Opponent List</button>
 </div>
 <div id="arena-list" style="background:#161b22;border:1px solid #30363d;padding:10px;margin-bottom:12px;font-size:13px;"></div>
+<div class="section-title">Top Players</div>
+<div class="btnrow">
+  <button onclick="refreshLeaderboard()">Refresh Leaderboard</button>
+</div>
+<div id="leaderboard-list" style="background:#161b22;border:1px solid #30363d;padding:10px;margin-bottom:12px;font-size:13px;"></div>
 <div id="log"></div>
 </div>
 
@@ -299,7 +304,7 @@ function print(msg) {
 function render() {
   if (!state) return;
   document.getElementById('rank').textContent =
-    `${state.name} | Level ${state.level} | Kills: ${state.kills} | Gold: ${state.gold}`;
+    `${state.username || 'Adventurer'} the ${state.name} | Level ${state.level} | Kills: ${state.kills} | Gold: ${state.gold}`;
   document.getElementById('stats').innerHTML = `
     <div class="stat"><b>STR:</b> ${state.str}</div>
     <div class="stat"><b>DEF:</b> ${state.def}</div>
@@ -338,6 +343,23 @@ function rest() {
   state.hp = Math.min(state.maxhp, state.hp + 5);
   print(`You pay 20 gold to rest by the fire. Stamina and HP recover slightly.`);
   render();
+}
+
+function rollLoot() {
+  if (!state) return;
+  const roll = Math.random();
+  if (roll < 0.06) {
+    const bonus = 15 + Math.floor(Math.random() * 30);
+    state.gold += bonus;
+    print(`Loot found: a small pouch of gold! +${bonus} gold.`);
+  } else if (roll < 0.14) {
+    state.hp = Math.min(state.maxhp, state.hp + 15);
+    print(`Loot found: a Health Potion, used immediately. +15 HP.`);
+  } else if (roll < 0.20) {
+    state.stamina = Math.min(state.maxStamina, state.stamina + 20);
+    print(`Loot found: a Stamina Potion, used immediately. +20 Stamina.`);
+  }
+  // no drop otherwise - keeps drops feeling earned, not guaranteed every fight
 }
 
 const SHOP_ITEMS = [
@@ -462,6 +484,8 @@ function fightBoss() {
     state.xp += xpWon;
     state.kills += 1;
     print(`Victory! You defeated the ${boss.name}! +${goldWon} gold, +${xpWon} XP.`);
+    rollLoot();
+    rollLoot(); // bosses get two loot rolls for better odds
     checkLevelUp();
   }
   render();
@@ -499,6 +523,7 @@ function fightMonster() {
     state.gold += m.gold;
     if (state.questDate === todayKey()) state.questProgress = (state.questProgress || 0) + 1;
     print(`You defeated the ${m.name}! +${m.xp} XP, +${m.gold} gold.`);
+    rollLoot();
     if (state.xp >= state.xpNext) {
       state.level++;
       state.xp -= state.xpNext;
@@ -544,6 +569,7 @@ async function load() {
       if (state.questProgress === undefined) state.questProgress = 0;
       if (state.questClaimed === undefined) state.questClaimed = false;
       if (state.lastBossDate === undefined) state.lastBossDate = null;
+      if (!state.username) state.username = currentUser.email ? currentUser.email.split('@')[0] : 'Adventurer';
       document.getElementById('hero-select').style.display = 'none';
       document.getElementById('game-ui').style.display = 'block';
       print("Welcome back, adventurer. Your progress was restored.");
@@ -570,13 +596,15 @@ async function publishToArena() {
   try {
     const record = {
       uid: currentUser.uid,
-      name: state.name + (walletPubkey ? ` (${walletPubkey.slice(0,4)}...)` : ''),
+      name: (state.username || 'Adventurer') + ' the ' + state.name + (walletPubkey ? ` (${walletPubkey.slice(0,4)}...)` : ''),
+      username: state.username || 'Adventurer',
       hero: state.hero,
       level: state.level,
       str: state.str,
       def: state.def,
       maxhp: state.maxhp,
       kills: state.kills,
+      gold: state.gold,
       updated: new Date().toISOString()
     };
     await db.collection('pvp_public').doc(currentUser.uid).set(record);
@@ -632,6 +660,33 @@ async function refreshArena() {
       <button onclick="fightPlayer(${i})">Challenge</button>
     </div>
   `).join('');
+}
+
+async function refreshLeaderboard() {
+  const listEl = document.getElementById('leaderboard-list');
+  listEl.innerHTML = 'Loading leaderboard...';
+  try {
+    const snapshot = await db.collection('pvp_public').get();
+    const players = [];
+    snapshot.forEach(doc => players.push(doc.data()));
+    players.sort((a, b) => b.level - a.level || (b.kills || 0) - (a.kills || 0));
+    const top = players.slice(0, 10);
+    if (top.length === 0) {
+      listEl.innerHTML = 'No players on the board yet. Be the first!';
+      return;
+    }
+    listEl.innerHTML = top.map((p, i) => {
+      const isYou = currentUser && p.uid === currentUser.uid;
+      return `
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #21262d;${isYou ? 'color:#e3b341;' : ''}">
+          <span>#${i+1} ${p.username || p.name} ${isYou ? '(you)' : ''}</span>
+          <span>Lvl ${p.level} — ${p.kills || 0} kills</span>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    listEl.innerHTML = 'Could not load leaderboard right now.';
+  }
 }
 
 function fightPlayer(index) {
