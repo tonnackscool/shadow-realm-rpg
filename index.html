@@ -42,6 +42,7 @@
   <div class="btnrow" style="margin-top:8px;">
     <button id="connectBtn" onclick="connectWallet()">Connect Phantom Wallet</button>
     <button id="redeemBtn" onclick="redeemGold()" disabled>Redeem Gold for TRI</button>
+    <button id="disconnectBtn" onclick="disconnectWallet()" style="display:none;">Disconnect Wallet</button>
   </div>
   <div id="redeemInfo" style="color:#7d8590;margin-top:6px;">Rate: 100 gold = 1 TRI. Requires wallet connection.</div>
 </div>
@@ -219,11 +220,27 @@ async function connectWallet() {
     document.getElementById('connectBtn').textContent = "Wallet Connected";
     document.getElementById('connectBtn').disabled = true;
     document.getElementById('redeemBtn').disabled = false;
+    document.getElementById('disconnectBtn').style.display = 'inline-block';
     print(`Wallet connected: ${walletPubkey}`);
     localStorage.setItem('shadowrealm_wallet', walletPubkey);
   } catch (e) {
     print(`Wallet connection failed or was rejected.`);
   }
+}
+
+async function disconnectWallet() {
+  const provider = getPhantomProvider();
+  try {
+    if (provider && provider.disconnect) await provider.disconnect();
+  } catch (e) { /* ignore */ }
+  walletPubkey = null;
+  localStorage.removeItem('shadowrealm_wallet');
+  document.getElementById('wallet-status').textContent = 'Wallet not connected';
+  document.getElementById('connectBtn').textContent = 'Connect Phantom Wallet';
+  document.getElementById('connectBtn').disabled = false;
+  document.getElementById('redeemBtn').disabled = true;
+  document.getElementById('disconnectBtn').style.display = 'none';
+  print('Wallet disconnected.');
 }
 
 async function redeemGold() {
@@ -497,6 +514,7 @@ async function tryAutoConnect() {
       document.getElementById('connectBtn').textContent = "Wallet Connected";
       document.getElementById('connectBtn').disabled = true;
       document.getElementById('redeemBtn').disabled = false;
+      document.getElementById('disconnectBtn').style.display = 'inline-block';
     } catch (e) { /* not previously trusted, ignore */ }
   }
 }
