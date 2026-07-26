@@ -665,7 +665,7 @@ function generateBots(playerLevel) {
     const heroClass = HEROES[Math.floor(Math.random() * HEROES.length)];
     bots.push({
       id: 'bot_' + i + '_' + lvl,
-      heroDisplay: heroClass.name + (i === 2 ? ' (Elite)' : ''),
+      heroDisplay: heroClass.name,
       level: lvl,
       str: 4 + lvl * 2 + Math.floor(Math.random() * 3),
       def: 4 + lvl * 2 + Math.floor(Math.random() * 3),
@@ -879,10 +879,58 @@ async function tryAutoConnect() {
   }
 }
 
+function aiAmbush() {
+  if (!state || state.hp <= 0) return;
+  const heroClass = HEROES[Math.floor(Math.random() * HEROES.length)];
+  const lvl = Math.max(1, state.level + Math.floor(Math.random() * 3) - 1);
+  const bot = {
+    heroDisplay: heroClass.name,
+    level: lvl,
+    str: 4 + lvl * 2 + Math.floor(Math.random() * 3),
+    def: 4 + lvl * 2 + Math.floor(Math.random() * 3),
+    maxhp: 25 + lvl * 6,
+    isBot: true
+  };
+
+  print(`--- Ambush! A wandering ${bot.heroDisplay} attacks you! ---`);
+  let myHp = state.hp, oppHp = bot.maxhp;
+  let rounds = 0;
+  // Bot strikes first since it's the aggressor.
+  while (myHp > 0 && oppHp > 0 && rounds < 20) {
+    const oppDmg = Math.max(1, bot.str * 2 - Math.floor(state.def / 2) - Math.floor(Math.random()*3));
+    myHp -= oppDmg;
+    print(`The ${bot.heroDisplay} strikes you for ${oppDmg} damage.`);
+    if (myHp <= 0) break;
+    const myDmg = Math.max(1, state.str * 2 - Math.floor(bot.def / 2) - Math.floor(Math.random()*3));
+    oppHp -= myDmg;
+    print(`You strike back for ${myDmg} damage.`);
+    rounds++;
+  }
+
+  if (myHp <= 0) {
+    state.hp = Math.max(1, Math.floor(state.maxhp * 0.25));
+    const goldLost = Math.min(state.gold, 5 + Math.floor(Math.random() * 15));
+    state.gold -= goldLost;
+    print(`You were overwhelmed! -${goldLost} gold. You survive, badly hurt.`);
+  } else {
+    state.hp = myHp;
+    const goldWon = 10 + lvl * 2;
+    const xpWon = Math.round((8 + lvl) * (state.xpBonus || 1));
+    state.gold += goldWon;
+    state.xp += xpWon;
+    print(`You fought off the ambush! +${goldWon} gold, +${xpWon} XP.`);
+    checkLevelUp();
+  }
+  render();
+}
+
 setInterval(() => {
   if (state && state.stamina < state.maxStamina) {
     state.stamina = Math.min(state.maxStamina, state.stamina + (state.staGain || 1));
     render();
+  }
+  if (state && state.hp > 0 && Math.random() < 0.05) {
+    aiAmbush();
   }
 }, 6000);
 </script>
