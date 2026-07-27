@@ -142,14 +142,12 @@
 
 <!-- Game UI -->
 <div id="game-ui" style="display:none;">
-  <!-- Top bar: Music, Settings, Cooldown -->
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-    <button onclick="toggleMusic()" id="musicBtn">Toggle Music</button>
+    <button onclick="toggleMusic()" id="musicBtn">Play Nature Sounds</button>
     <span id="cooldown-display" style="color:#e3b341; font-weight:bold;"></span>
     <span class="settings-toggle" onclick="toggleSettings()">⚙️ Settings</span>
   </div>
 
-  <!-- Settings panel -->
   <div id="settings-panel" class="panel">
     <div class="section-title" style="margin-top:0;">Settings</div>
     <div class="setting-row">
@@ -296,60 +294,24 @@ let arenaRecords = [];
 let lastPublishTime = 0;
 const PUBLISH_THROTTLE_MS = 30000;
 
-// Cooldown
 let actionCooldownRemaining = 0;
 let cooldownInterval = null;
 
-// Background music
-let musicOsc = null;
-let musicGain = null;
-let musicPlaying = false;
-let musicVolume = 0.1; // 10%
+// --- Nature ambient ---
+let natureSource = null;
+let natureGain = null;
+let naturePlaying = false;
+let musicVolume = 0.1;
 
-// SFX global gain
+// SFX gain
 let sfxGain = null;
 let sfxVolume = 0.1;
 
-// Ambush setting
 let ambushesEnabled = true;
-
-// Settings
-function toggleSettings() {
-  const panel = document.getElementById('settings-panel');
-  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-  if (panel.style.display === 'block' && state) {
-    document.getElementById('settings-username').value = state.username;
-  }
-}
-
-function updateMusicVolume(val) {
-  musicVolume = val / 100;
-  if (musicGain) musicGain.gain.value = musicVolume;
-  localStorage.setItem('musicVolume', val);
-}
-
-function updateSfxVolume(val) {
-  sfxVolume = val / 100;
-  if (sfxGain) sfxGain.gain.value = sfxVolume;
-  localStorage.setItem('sfxVolume', val);
-}
-
-function toggleAmbush(val) {
-  ambushesEnabled = val === 'on';
-  localStorage.setItem('ambushesEnabled', val);
-}
-
-function changeUsername() {
-  const newName = document.getElementById('settings-username').value.trim();
-  if (!newName) return;
-  state.username = newName;
-  print(`Username changed to ${newName}.`);
-  render();
-}
 
 const EQUIP_SLOTS = ['weapon', 'armor', 'accessory'];
 
-// ========== SOUND ENGINE (Web Audio) ==========
+// ========== SOUND ENGINE ==========
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
 let audioCtx;
 function initAudio() {
@@ -381,37 +343,93 @@ function sfxDefeat() { playTone(100, 'sawtooth', 0.3, 0.12); }
 function sfxLevelUp() { playTone(1000, 'triangle', 0.3, 0.15); playTone(1500, 'triangle', 0.3, 0.15); }
 function sfxAmbush() { playTone(80, 'sawtooth', 0.2, 0.15); }
 
-// ========== BACKGROUND MUSIC ==========
-function startBackgroundMusic() {
-  if (musicPlaying) return;
+// ========== NATURE AMBIENT GENERATOR ==========
+function createNoiseBuffer() {
+  const bufferSize = 2 * audioCtx.sampleRate;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = Math.random() * 2 - 1;
+  }
+  return buffer;
+}
+
+function startNatureAmbient() {
+  if (naturePlaying) return;
   initAudio();
-  musicOsc = audioCtx.createOscillator();
-  musicGain = audioCtx.createGain();
-  musicOsc.type = 'sine';
-  musicOsc.frequency.value = 60;
-  musicGain.gain.value = musicVolume;
-  musicOsc.connect(musicGain).connect(audioCtx.destination);
-  musicOsc.loop = true;
-  musicOsc.start();
-  musicPlaying = true;
+  const noiseBuffer = createNoiseBuffer();
+  natureSource = audioCtx.createBufferSource();
+  natureSource.buffer = noiseBuffer;
+  natureSource.loop = true;
+
+  // Low-pass filter for soft wind/rain texture
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 400;
+  filter.Q.value = 0.5;
+
+  natureGain = audioCtx.createGain();
+  natureGain.gain.value = musicVolume;
+
+  natureSource.connect(filter);
+  filter.connect(natureGain);
+  natureGain.connect(audioCtx.destination);
+  natureSource.start();
+  naturePlaying = true;
 }
-function stopBackgroundMusic() {
-  if (musicOsc) {
-    musicOsc.stop();
-    musicOsc.disconnect();
-    musicOsc = null;
-    musicGain = null;
-    musicPlaying = false;
+
+function stopNatureAmbient() {
+  if (natureSource) {
+    natureSource.stop();
+    natureSource.disconnect();
+    natureSource = null;
+    natureGain = null;
+    naturePlaying = false;
   }
 }
+
 function toggleMusic() {
-  if (musicPlaying) {
-    stopBackgroundMusic();
-    document.getElementById('musicBtn').textContent = 'Play Music';
+  if (naturePlaying) {
+    stopNatureAmbient();
+    document.getElementById('musicBtn').textContent = 'Play Nature Sounds';
   } else {
-    startBackgroundMusic();
-    document.getElementById('musicBtn').textContent = 'Mute Music';
+    startNatureAmbient();
+    document.getElementById('musicBtn').textContent = 'Mute Nature Sounds';
   }
+}
+
+// ========== SETTINGS ==========
+function toggleSettings() {
+  const panel = document.getElementById('settings-panel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  if (panel.style.display === 'block' && state) {
+    document.getElementById('settings-username').value = state.username;
+  }
+}
+
+function updateMusicVolume(val) {
+  musicVolume = val / 100;
+  if (natureGain) natureGain.gain.value = musicVolume;
+  localStorage.setItem('musicVolume', val);
+}
+
+function updateSfxVolume(val) {
+  sfxVolume = val / 100;
+  if (sfxGain) sfxGain.gain.value = sfxVolume;
+  localStorage.setItem('sfxVolume', val);
+}
+
+function toggleAmbush(val) {
+  ambushesEnabled = val === 'on';
+  localStorage.setItem('ambushesEnabled', val);
+}
+
+function changeUsername() {
+  const newName = document.getElementById('settings-username').value.trim();
+  if (!newName) return;
+  state.username = newName;
+  print(`Username changed to ${newName}.`);
+  render();
 }
 
 // ========== COOLDOWN ==========
@@ -479,7 +497,7 @@ auth.onAuthStateChanged(async user => {
       render();
       tryAutoConnect();
       loadSettings();
-      if (musicVolume > 0) startBackgroundMusic();
+      if (musicVolume > 0) startNatureAmbient();
     } else {
       document.getElementById('hero-select').style.display = 'block';
       renderHeroSelect();
@@ -529,7 +547,7 @@ function selectHero(id) {
   render();
   tryAutoConnect();
   loadSettings();
-  if (musicVolume > 0) startBackgroundMusic();
+  if (musicVolume > 0) startNatureAmbient();
 }
 
 // ========== HELPERS ==========
@@ -1256,12 +1274,10 @@ setInterval(() => {
   }
 }, 1000);
 
-// Ambush interval (only if enabled)
 setInterval(() => {
   if (state && state.hp>0 && ambushesEnabled && Math.random()<0.05) aiAmbush();
 }, 6000);
 
-// ========== RESET & MISC ==========
 function resetGame() {
   if (!confirm("Reset?")) return;
   state = null;
