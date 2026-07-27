@@ -95,11 +95,26 @@
     font-size: 11px; color: #7d8590;
     text-align: right; margin-top: -4px; margin-bottom: 8px;
   }
-  /* Mobile tweaks */
+  .settings-toggle {
+    cursor: pointer; font-size: 1.2rem;
+    color: #e3b341; user-select: none;
+    text-align: right; margin-bottom: 5px;
+  }
+  #settings-panel {
+    display: none; margin-bottom: 12px;
+  }
+  .setting-row {
+    display: flex; align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .setting-row label { margin-right: 10px; }
+  .setting-row input[type="range"] { width: 150px; }
   @media (max-width: 500px) {
     h1 { font-size: 1.4rem; }
     button { padding: 10px 8px; font-size: 0.85rem; }
     .btnrow { justify-content: center; }
+    .setting-row input[type="range"] { width: 100px; }
   }
 </style>
 </head>
@@ -127,11 +142,38 @@
 
 <!-- Game UI -->
 <div id="game-ui" style="display:none;">
-  <!-- Music toggle & cooldown -->
+  <!-- Top bar: Music, Settings, Cooldown -->
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
     <button onclick="toggleMusic()" id="musicBtn">Toggle Music</button>
     <span id="cooldown-display" style="color:#e3b341; font-weight:bold;"></span>
+    <span class="settings-toggle" onclick="toggleSettings()">⚙️ Settings</span>
   </div>
+
+  <!-- Settings panel -->
+  <div id="settings-panel" class="panel">
+    <div class="section-title" style="margin-top:0;">Settings</div>
+    <div class="setting-row">
+      <label>Change username:</label>
+      <input id="settings-username" type="text" maxlength="20" style="width:150px;background:#0b0d10;border:1px solid #30363d;color:#c9d1d9;padding:4px;">
+      <button onclick="changeUsername()">Update</button>
+    </div>
+    <div class="setting-row">
+      <label>Music volume:</label>
+      <input id="music-volume" type="range" min="0" max="100" value="10" oninput="updateMusicVolume(this.value)">
+    </div>
+    <div class="setting-row">
+      <label>SFX volume:</label>
+      <input id="sfx-volume" type="range" min="0" max="100" value="10" oninput="updateSfxVolume(this.value)">
+    </div>
+    <div class="setting-row">
+      <label>AI Ambushes:</label>
+      <select id="ambush-toggle" onchange="toggleAmbush(this.value)">
+        <option value="on">On</option>
+        <option value="off">Off</option>
+      </select>
+    </div>
+  </div>
+
   <!-- Wallet -->
   <div class="panel">
     <div id="wallet-status">Wallet not connected</div>
@@ -254,7 +296,7 @@ let arenaRecords = [];
 let lastPublishTime = 0;
 const PUBLISH_THROTTLE_MS = 30000;
 
-// Cooldown system
+// Cooldown
 let actionCooldownRemaining = 0;
 let cooldownInterval = null;
 
@@ -262,6 +304,48 @@ let cooldownInterval = null;
 let musicOsc = null;
 let musicGain = null;
 let musicPlaying = false;
+let musicVolume = 0.1; // 10%
+
+// SFX global gain
+let sfxGain = null;
+let sfxVolume = 0.1;
+
+// Ambush setting
+let ambushesEnabled = true;
+
+// Settings
+function toggleSettings() {
+  const panel = document.getElementById('settings-panel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  if (panel.style.display === 'block' && state) {
+    document.getElementById('settings-username').value = state.username;
+  }
+}
+
+function updateMusicVolume(val) {
+  musicVolume = val / 100;
+  if (musicGain) musicGain.gain.value = musicVolume;
+  localStorage.setItem('musicVolume', val);
+}
+
+function updateSfxVolume(val) {
+  sfxVolume = val / 100;
+  if (sfxGain) sfxGain.gain.value = sfxVolume;
+  localStorage.setItem('sfxVolume', val);
+}
+
+function toggleAmbush(val) {
+  ambushesEnabled = val === 'on';
+  localStorage.setItem('ambushesEnabled', val);
+}
+
+function changeUsername() {
+  const newName = document.getElementById('settings-username').value.trim();
+  if (!newName) return;
+  state.username = newName;
+  print(`Username changed to ${newName}.`);
+  render();
+}
 
 const EQUIP_SLOTS = ['weapon', 'armor', 'accessory'];
 
@@ -269,17 +353,22 @@ const EQUIP_SLOTS = ['weapon', 'armor', 'accessory'];
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
 let audioCtx;
 function initAudio() {
-  if (!audioCtx) audioCtx = new AudioCtx();
+  if (!audioCtx) {
+    audioCtx = new AudioCtx();
+    sfxGain = audioCtx.createGain();
+    sfxGain.gain.value = sfxVolume;
+    sfxGain.connect(audioCtx.destination);
+  }
 }
 function playTone(freq, type='square', duration=0.1, vol=0.1) {
-  if (!audioCtx) return;
+  if (!audioCtx || !sfxGain) return;
   const osc = audioCtx.createOscillator();
   const gain = audioCtx.createGain();
   osc.type = type;
   osc.frequency.value = freq;
   gain.gain.setValueAtTime(vol, audioCtx.currentTime);
   gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
-  osc.connect(gain).connect(audioCtx.destination);
+  osc.connect(gain).connect(sfxGain);
   osc.start();
   osc.stop(audioCtx.currentTime + duration);
 }
@@ -299,8 +388,8 @@ function startBackgroundMusic() {
   musicOsc = audioCtx.createOscillator();
   musicGain = audioCtx.createGain();
   musicOsc.type = 'sine';
-  musicOsc.frequency.value = 60; // low hum
-  musicGain.gain.value = 0.1; // 10% volume
+  musicOsc.frequency.value = 60;
+  musicGain.gain.value = musicVolume;
   musicOsc.connect(musicGain).connect(audioCtx.destination);
   musicOsc.loop = true;
   musicOsc.start();
@@ -389,7 +478,8 @@ auth.onAuthStateChanged(async user => {
     if (hadSave) {
       render();
       tryAutoConnect();
-      startBackgroundMusic(); // start music on login
+      loadSettings();
+      if (musicVolume > 0) startBackgroundMusic();
     } else {
       document.getElementById('hero-select').style.display = 'block';
       renderHeroSelect();
@@ -438,7 +528,8 @@ function selectHero(id) {
   print(`You begin your journey as a ${h.name}.`);
   render();
   tryAutoConnect();
-  startBackgroundMusic(); // music on hero select
+  loadSettings();
+  if (musicVolume > 0) startBackgroundMusic();
 }
 
 // ========== HELPERS ==========
@@ -474,6 +565,9 @@ function getEquippedStats() {
     }
   }
   return bonus;
+}
+function getOpponentDisplay(opp) {
+  return opp.heroDisplay || opp.username || opp.name || 'Unknown';
 }
 
 // ========== RENDER & SAVE ==========
@@ -535,6 +629,22 @@ async function load() {
     }
   } catch(e) { print('Cloud load error.'); }
   return false;
+}
+function loadSettings() {
+  const musicVal = localStorage.getItem('musicVolume');
+  if (musicVal) {
+    document.getElementById('music-volume').value = musicVal;
+    musicVolume = musicVal / 100;
+  }
+  const sfxVal = localStorage.getItem('sfxVolume');
+  if (sfxVal) {
+    document.getElementById('sfx-volume').value = sfxVal;
+    sfxVolume = sfxVal / 100;
+    if (sfxGain) sfxGain.gain.value = sfxVolume;
+  }
+  const ambushVal = localStorage.getItem('ambushesEnabled') || 'on';
+  document.getElementById('ambush-toggle').value = ambushVal;
+  ambushesEnabled = ambushVal === 'on';
 }
 
 // ========== WALLET ==========
@@ -870,7 +980,7 @@ function checkLevelUp() {
   }
 }
 
-// ========== PVP & ARENA (with cooldown on individual fights) ==========
+// ========== PVP & ARENA (no level display, fallback names) ==========
 function generateBots(playerLevel) {
   const levels = [
     Math.max(1, playerLevel + Math.floor(Math.random()*3)-1),
@@ -885,26 +995,32 @@ function generateBots(playerLevel) {
     if (lvl >= 25) { str += 10; def += 10; maxhp += 40; }
     else if (lvl >= 15) { str += 5; def += 5; maxhp += 20; }
     return {
-      id: 'bot_'+i+'_'+lvl, heroDisplay: hero.name, level: lvl,
-      str, def, maxhp, isBot: true
+      id: 'bot_'+i+'_'+lvl,
+      heroDisplay: hero.name,
+      level: lvl, str, def, maxhp,
+      isBot: true
     };
   });
 }
+
 async function refreshArena() {
   const listEl = document.getElementById('arena-list');
   listEl.innerHTML = 'Loading...';
   let records = [];
   try {
     const snap = await db.collection('pvp_public').get();
-    snap.forEach(doc => { if (doc.data().uid !== currentUser?.uid) records.push(doc.data()); });
+    snap.forEach(doc => {
+      const r = doc.data();
+      if (r.uid !== currentUser?.uid) records.push(r);
+    });
   } catch(e){}
   const bots = generateBots(state?.level||1);
   records = records.concat(bots);
   records.sort((a,b) => b.level - a.level);
   arenaRecords = records.slice(0,20);
-  listEl.innerHTML = arenaRecords.map((r,i)=>`
+  listEl.innerHTML = arenaRecords.map((r,i) => `
     <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #21262d;">
-      <span>${r.heroDisplay} (Lvl ${r.level})</span>
+      <span>${getOpponentDisplay(r)}</span>
       <button onclick="fightPlayer(${i})" class="action-btn">Challenge</button>
     </div>`).join('');
 }
@@ -914,12 +1030,16 @@ async function publishToArena() {
   try {
     await db.collection('pvp_public').doc(currentUser.uid).set({
       uid: currentUser.uid,
-      username: state.username, heroDisplay: state.name,
-      level: state.level, str: state.str + getEquippedStats().str,
+      username: state.username,
+      heroDisplay: state.name,
+      level: state.level,
+      str: state.str + getEquippedStats().str,
       def: state.def + getEquippedStats().def,
       maxhp: state.maxhp + getEquippedStats().maxhp,
-      kills: state.kills, gold: state.gold,
-      tournamentDate: state.tournamentDate, tournamentWins: state.tournamentWins,
+      kills: state.kills,
+      gold: state.gold,
+      tournamentDate: state.tournamentDate,
+      tournamentWins: state.tournamentWins,
       updated: new Date().toISOString()
     });
   } catch(e){}
@@ -932,7 +1052,8 @@ function fightPlayer(index) {
   if (state.stamina < 15 || state.gold < 10) { print("Need 15 STA and 10 gold."); return; }
   state.stamina -= 15; state.gold -= 10;
   initAudio();
-  print(`Duel vs ${opp.heroDisplay}!`);
+  const oppName = getOpponentDisplay(opp);
+  print(`Duel vs ${oppName}!`);
   const eq = getEquippedStats();
   let myHp = state.hp, oppHp = opp.maxhp;
   while (myHp>0 && oppHp>0) {
@@ -1017,14 +1138,17 @@ async function claimTournament() {
 
 async function logBattle(opp, result, aiInitiated=false) {
   if (!currentUser) return;
+  const oppName = getOpponentDisplay(opp);
   try {
     await db.collection('pvp_battles').add({
       attackerUid: aiInitiated ? null : currentUser.uid,
-      attackerName: aiInitiated ? opp.heroDisplay : (state.username||state.name),
+      attackerName: aiInitiated ? oppName : (state.username||state.name),
       defenderUid: aiInitiated ? currentUser.uid : (opp.uid||null),
-      defenderName: aiInitiated ? (state.username||state.name) : opp.heroDisplay,
-      isBot: !!opp.isBot, aiInitiated,
-      result, participants: [currentUser.uid].concat(opp.uid||[]),
+      defenderName: aiInitiated ? (state.username||state.name) : oppName,
+      isBot: !!opp.isBot,
+      aiInitiated,
+      result,
+      participants: [currentUser.uid].concat(opp.uid||[]),
       timestamp: new Date().toISOString()
     });
   } catch(e){}
@@ -1047,13 +1171,14 @@ async function autoAttack() {
 
 // ========== AMBUSH (AI) ==========
 function aiAmbush() {
+  if (!ambushesEnabled) return;
   if (!state || state.hp<=0) return;
   const hero = HEROES[Math.floor(Math.random()*HEROES.length)];
   const lvl = Math.max(1, state.level + Math.floor(Math.random()*3)-1);
   let str = 4 + lvl*2; let def = 4 + lvl*2; let maxhp = 25 + lvl*6;
   if (lvl>=25){str+=10;def+=10;maxhp+=40;} else if(lvl>=15){str+=5;def+=5;maxhp+=20;}
   const bot = {heroDisplay:hero.name, level:lvl, str, def, maxhp, isBot:true};
-  print(`--- Ambush! ${bot.heroDisplay} attacks! ---`, 'ambush');
+  print(`--- Ambush! ${hero.name} attacks! ---`, 'ambush');
   sfxAmbush();
   const eq = getEquippedStats();
   let myHp = state.hp, oppHp = bot.maxhp;
@@ -1091,7 +1216,7 @@ async function refreshLeaderboard() {
     players.sort((a,b)=>b.level-a.level||(b.kills||0)-(a.kills||0));
     list.innerHTML = players.slice(0,10).map((p,i)=>`
       <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #21262d;${p.uid===currentUser?.uid?'color:#e3b341':''}">
-        <span>#${i+1} ${p.username} ${p.uid===currentUser?.uid?'(you)':''}</span>
+        <span>#${i+1} ${p.username || p.heroDisplay || 'Unknown'} ${p.uid===currentUser?.uid?'(you)':''}</span>
         <span>Lvl ${p.level} | ${p.kills||0} kills</span>
       </div>`).join('') || 'No players yet.';
   } catch(e) { list.innerHTML = 'Error.'; }
@@ -1105,8 +1230,9 @@ async function refreshBattleLog() {
     battles.sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
     list.innerHTML = battles.slice(0,15).map(b=>{
       const youWon = (b.attackerUid===currentUser.uid && b.result==='win') || (b.defenderUid===currentUser.uid && b.result==='loss');
+      const opp = b.aiInitiated ? b.attackerName : b.defenderName;
       return `<div style="display:flex;justify-content:space-between;">
-        <span>${b.aiInitiated?`${b.attackerName} ambushed you`:`You vs ${b.defenderName}`}</span>
+        <span>${b.aiInitiated?`${opp} ambushed you`:`You vs ${opp}`}</span>
         <b style="color:${youWon?'#3fb950':'#f85149'};">${youWon?'WIN':'LOSS'}</b>
       </div>`;
     }).join('') || 'No battles yet.';
@@ -1130,9 +1256,9 @@ setInterval(() => {
   }
 }, 1000);
 
-// Ambush interval
+// Ambush interval (only if enabled)
 setInterval(() => {
-  if (state && state.hp>0 && Math.random()<0.05) aiAmbush();
+  if (state && state.hp>0 && ambushesEnabled && Math.random()<0.05) aiAmbush();
 }, 6000);
 
 // ========== RESET & MISC ==========
@@ -1147,6 +1273,7 @@ function resetGame() {
 
 window.addEventListener('load', () => {
   initAudio();
+  loadSettings();
   document.body.addEventListener('click', initAudio, {once:true});
 });
 </script>
