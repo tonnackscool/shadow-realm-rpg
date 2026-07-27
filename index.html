@@ -110,6 +110,28 @@
   }
   .setting-row label { margin-right: 10px; }
   .setting-row input[type="range"] { width: 150px; }
+  /* Tavern chat */
+  #tavern-chat {
+    height: 150px; overflow-y: auto;
+    background: #0b0d10; border: 1px solid #30363d;
+    padding: 8px; border-radius: 4px;
+    margin-bottom: 8px; font-size: 13px;
+  }
+  #tavern-input {
+    width: calc(100% - 70px); padding: 8px;
+    background: #0b0d10; border: 1px solid #30363d;
+    color: #c9d1d9; border-radius: 4px;
+  }
+  .achievement-badge {
+    display: inline-block; background: #21262d;
+    border: 1px solid #30363d; border-radius: 6px;
+    padding: 6px 12px; margin: 4px;
+    font-size: 12px; text-align: center;
+  }
+  .achievement-earned {
+    border-color: #e3b341; color: #e3b341;
+    background: #1c1608;
+  }
   @media (max-width: 500px) {
     h1 { font-size: 1.4rem; }
     button { padding: 10px 8px; font-size: 0.85rem; }
@@ -219,9 +241,17 @@
   <div class="section-title">Shop</div>
   <div id="shop-box" class="panel"></div>
 
+  <!-- Crafting -->
+  <div class="section-title">Crafting</div>
+  <div id="crafting-box" class="panel"></div>
+
   <!-- Equipment / Inventory -->
   <div class="section-title">Equipment & Inventory</div>
   <div id="inventory-box" class="panel"></div>
+
+  <!-- Achievements -->
+  <div class="section-title">Achievements</div>
+  <div id="achievements-box" class="panel"></div>
 
   <!-- PvP Arena -->
   <div class="section-title">PvP Arena</div>
@@ -234,7 +264,11 @@
   <!-- Leaderboard -->
   <div class="section-title">Top Players</div>
   <div class="btnrow">
-    <button onclick="refreshLeaderboard()">Refresh Leaderboard</button>
+    <select id="leaderboard-filter" onchange="refreshLeaderboard()">
+      <option value="all">All Time</option>
+      <option value="monthly">Monthly</option>
+    </select>
+    <button onclick="refreshLeaderboard()">Refresh</button>
   </div>
   <div id="leaderboard-list" class="panel"></div>
 
@@ -255,6 +289,14 @@
 
   <!-- Log -->
   <div id="log"></div>
+
+  <!-- Tavern Chat -->
+  <div class="section-title">🍻 Tavern Chat</div>
+  <div id="tavern-chat"></div>
+  <div style="display:flex; gap:8px;">
+    <input id="tavern-input" type="text" placeholder="Say something..." maxlength="200" onkeydown="if(event.key==='Enter')sendChat()">
+    <button onclick="sendChat()">Send</button>
+  </div>
 </div>
 
 <!-- Firebase -->
@@ -297,19 +339,54 @@ const PUBLISH_THROTTLE_MS = 30000;
 let actionCooldownRemaining = 0;
 let cooldownInterval = null;
 
-// --- Nature ambient ---
+// Nature ambient
 let natureSource = null;
 let natureGain = null;
 let naturePlaying = false;
 let musicVolume = 0.1;
 
-// SFX gain
 let sfxGain = null;
 let sfxVolume = 0.1;
-
 let ambushesEnabled = true;
 
 const EQUIP_SLOTS = ['weapon', 'armor', 'accessory'];
+
+// Achievements definitions
+const ACHIEVEMENTS = [
+  { id:'kills10', name:'Hunter', desc:'Kill 10 enemies', check: s => s.kills >= 10, reward: {gold:50, xp:20} },
+  { id:'kills50', name:'Slayer', desc:'Kill 50 enemies', check: s => s.kills >= 50, reward: {gold:100, xp:40} },
+  { id:'kills100', name:'Exterminator', desc:'Kill 100 enemies', check: s => s.kills >= 100, reward: {gold:200, xp:80} },
+  { id:'kills500', name:'Legend', desc:'Kill 500 enemies', check: s => s.kills >= 500, reward: {gold:500, xp:200} },
+  { id:'level5', name:'Novice', desc:'Reach level 5', check: s => s.level >= 5, reward: {gold:30, xp:10} },
+  { id:'level10', name:'Adept', desc:'Reach level 10', check: s => s.level >= 10, reward: {gold:60, xp:20} },
+  { id:'level25', name:'Master', desc:'Reach level 25', check: s => s.level >= 25, reward: {gold:150, xp:50} },
+  { id:'level50', name:'Grandmaster', desc:'Reach level 50', check: s => s.level >= 50, reward: {gold:300, xp:100} },
+  { id:'gold500', name:'Wealthy', desc:'Accumulate 500 gold', check: s => s.gold >= 500, reward: {gold:50, xp:10} },
+  { id:'gold2000', name:'Rich', desc:'Accumulate 2000 gold', check: s => s.gold >= 2000, reward: {gold:100, xp:20} },
+  { id:'gold10000', name:'Millionaire', desc:'Accumulate 10000 gold', check: s => s.gold >= 10000, reward: {gold:200, xp:50} },
+  { id:'tournament1', name:'Challenger', desc:'Win 1 tournament', check: s => s.tournamentWins >= 1, reward: {gold:40, xp:15} },
+  { id:'tournament3', name:'Victor', desc:'Win 3 tournaments', check: s => s.tournamentWins >= 3, reward: {gold:80, xp:30} },
+  { id:'tournament10', name:'Dominator', desc:'Win 10 tournaments', check: s => s.tournamentWins >= 10, reward: {gold:200, xp:80} },
+  { id:'items5', name:'Collector', desc:'Own 5 items', check: s => s.ownedItems.length >= 5, reward: {gold:25, xp:10} },
+  { id:'items10', name:'Hoarder', desc:'Own 10 items', check: s => s.ownedItems.length >= 10, reward: {gold:50, xp:20} },
+  { id:'items25', name:'Curator', desc:'Own 25 items', check: s => s.ownedItems.length >= 25, reward: {gold:100, xp:40} },
+  { id:'craft5', name:'Apprentice Crafter', desc:'Craft 5 times', check: s => (s.craftCount||0) >= 5, reward: {gold:30, xp:10} },
+  { id:'craft20', name:'Master Crafter', desc:'Craft 20 times', check: s => (s.craftCount||0) >= 20, reward: {gold:100, xp:30} }
+];
+
+// Crafting recipes
+const CRAFT_RECIPES = [
+  { ingredients: ['iron_sword','steel_shield'], result: 'warrior_plate' },
+  { ingredients: ['dragon_fang','phoenix_heart'], result: 'dragonheart_amulet' },
+  { ingredients: ['vigor_ring','elixir_ages'], result: 'eternal_ring' }
+];
+
+// Additional crafted items definitions
+const CRAFTED_ITEMS = {
+  warrior_plate: { id:'warrior_plate', name:'Warrior’s Plate', desc:'+4 STR, +4 DEF, +20 HP', price:999, type:'equipment', slot:'armor', str:4, def:4, maxhp:20 },
+  dragonheart_amulet: { id:'dragonheart_amulet', name:'Dragonheart Amulet', desc:'+10 STR, +50 HP', price:999, type:'equipment', slot:'accessory', str:10, maxhp:50 },
+  eternal_ring: { id:'eternal_ring', name:'Eternal Ring', desc:'+40 HP, +5 STR, +5 DEF', price:999, type:'equipment', slot:'accessory', maxhp:40, str:5, def:5 }
+};
 
 // ========== SOUND ENGINE ==========
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -353,7 +430,6 @@ function createNoiseBuffer() {
   }
   return buffer;
 }
-
 function startNatureAmbient() {
   if (naturePlaying) return;
   initAudio();
@@ -361,23 +437,18 @@ function startNatureAmbient() {
   natureSource = audioCtx.createBufferSource();
   natureSource.buffer = noiseBuffer;
   natureSource.loop = true;
-
-  // Low-pass filter for soft wind/rain texture
   const filter = audioCtx.createBiquadFilter();
   filter.type = 'lowpass';
   filter.frequency.value = 400;
   filter.Q.value = 0.5;
-
   natureGain = audioCtx.createGain();
   natureGain.gain.value = musicVolume;
-
   natureSource.connect(filter);
   filter.connect(natureGain);
   natureGain.connect(audioCtx.destination);
   natureSource.start();
   naturePlaying = true;
 }
-
 function stopNatureAmbient() {
   if (natureSource) {
     natureSource.stop();
@@ -387,7 +458,6 @@ function stopNatureAmbient() {
     naturePlaying = false;
   }
 }
-
 function toggleMusic() {
   if (naturePlaying) {
     stopNatureAmbient();
@@ -406,24 +476,20 @@ function toggleSettings() {
     document.getElementById('settings-username').value = state.username;
   }
 }
-
 function updateMusicVolume(val) {
   musicVolume = val / 100;
   if (natureGain) natureGain.gain.value = musicVolume;
   localStorage.setItem('musicVolume', val);
 }
-
 function updateSfxVolume(val) {
   sfxVolume = val / 100;
   if (sfxGain) sfxGain.gain.value = sfxVolume;
   localStorage.setItem('sfxVolume', val);
 }
-
 function toggleAmbush(val) {
   ambushesEnabled = val === 'on';
   localStorage.setItem('ambushesEnabled', val);
 }
-
 function changeUsername() {
   const newName = document.getElementById('settings-username').value.trim();
   if (!newName) return;
@@ -498,6 +564,7 @@ auth.onAuthStateChanged(async user => {
       tryAutoConnect();
       loadSettings();
       if (musicVolume > 0) startNatureAmbient();
+      startTavernListener();
     } else {
       document.getElementById('hero-select').style.display = 'block';
       renderHeroSelect();
@@ -505,7 +572,6 @@ auth.onAuthStateChanged(async user => {
   } else {
     currentUser = null;
     state = null;
-    log.textContent = '';
     document.getElementById('game-ui').style.display = 'none';
     document.getElementById('hero-select').style.display = 'none';
     document.getElementById('login-screen').style.display = 'block';
@@ -523,7 +589,6 @@ function renderHeroSelect() {
     </div>
   `).join('');
 }
-
 function selectHero(id) {
   const h = HEROES.find(x=>x.id===id);
   state = {
@@ -537,7 +602,9 @@ function selectHero(id) {
     ownedItems:[], equipped:{weapon:null,armor:null,accessory:null},
     questDate:null, questProgress:0, questClaimed:false,
     lastBossDate:null,
-    tournamentDate:null, tournamentWins:0, tournamentClaimed:false
+    tournamentDate:null, tournamentWins:0, tournamentClaimed:false,
+    achievements: [],
+    craftCount: 0
   };
   pendingUsername = null;
   document.getElementById('hero-select').style.display = 'none';
@@ -548,6 +615,7 @@ function selectHero(id) {
   tryAutoConnect();
   loadSettings();
   if (musicVolume > 0) startNatureAmbient();
+  startTavernListener();
 }
 
 // ========== HELPERS ==========
@@ -608,13 +676,16 @@ function render() {
   document.getElementById('bar').style.background = pct < 25 ? '#f85149' : (pct < 60 ? '#e3b341' : '#3fb950');
   save();
   renderShop();
+  renderCrafting();
   renderInventory();
+  renderAchievements();
   renderQuest();
   const now = Date.now();
   if (now - lastPublishTime > PUBLISH_THROTTLE_MS) {
     publishToArena();
     lastPublishTime = now;
   }
+  checkAchievements();
 }
 
 let saveTimer = null;
@@ -640,6 +711,8 @@ async function load() {
       if (state.tournamentDate === undefined) state.tournamentDate = null;
       if (state.tournamentWins === undefined) state.tournamentWins = 0;
       if (state.tournamentClaimed === undefined) state.tournamentClaimed = false;
+      if (!state.achievements) state.achievements = [];
+      if (state.craftCount === undefined) state.craftCount = 0;
       document.getElementById('hero-select').style.display = 'none';
       document.getElementById('game-ui').style.display = 'block';
       print("Welcome back.");
@@ -710,7 +783,6 @@ async function tryAutoConnect() {
     } catch(e){}
   }
 }
-
 async function redeemGold() {
   if (!walletPubkey || !currentUser) return;
   const TRI_RATE = 100;
@@ -731,9 +803,9 @@ async function redeemGold() {
   render();
 }
 
-// ========== TRAINING & REST (with cooldown) ==========
+// ========== TRAINING & REST ==========
 function train(type) {
-  if (actionCooldownRemaining > 0) { print("Cooldown active. Wait."); return; }
+  if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
   initAudio();
   const cost = type==='hp'?8:5;
   if (!useStamina(cost)) return;
@@ -754,7 +826,7 @@ function rest() {
   render();
 }
 
-// ========== LOOT SYSTEM ==========
+// ========== LOOT ==========
 function rollLoot() {
   const roll = Math.random();
   if (roll < 0.03) {
@@ -797,7 +869,7 @@ const FEATURED_ITEMS = [
 ];
 
 function findShopItem(id) {
-  return SHOP_ITEMS.concat(FEATURED_ITEMS).find(i=>i.id===id);
+  return SHOP_ITEMS.concat(FEATURED_ITEMS).concat(Object.values(CRAFTED_ITEMS)).find(i=>i.id===id);
 }
 function getFeaturedItem() {
   const d = new Date();
@@ -885,6 +957,76 @@ function buyItem(itemId) {
   render();
 }
 
+// ========== CRAFTING ==========
+function renderCrafting() {
+  const box = document.getElementById('crafting-box');
+  if (!box || !state) return;
+  const recipesHtml = CRAFT_RECIPES.map((recipe, idx) => {
+    const [a,b] = recipe.ingredients;
+    const itemA = findShopItem(a);
+    const itemB = findShopItem(b);
+    const result = CRAFTED_ITEMS[recipe.result];
+    const canCraft = state.ownedItems.includes(a) && state.ownedItems.includes(b) && !state.ownedItems.includes(result.id);
+    return `<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; border-bottom:1px solid #21262d;">
+      <span>${itemA?.name || a} + ${itemB?.name || b} → <b>${result.name}</b> (${result.desc})</span>
+      <button ${canCraft?'':'disabled'} onclick="craftItem(${idx})">Craft</button>
+    </div>`;
+  }).join('');
+  box.innerHTML = recipesHtml || '<div style="color:#7d8590;">No recipes available.</div>';
+}
+
+function craftItem(recipeIndex) {
+  const recipe = CRAFT_RECIPES[recipeIndex];
+  if (!recipe) return;
+  const [a,b] = recipe.ingredients;
+  if (!state.ownedItems.includes(a) || !state.ownedItems.includes(b)) {
+    print("You don't have the required ingredients."); return;
+  }
+  const result = CRAFTED_ITEMS[recipe.result];
+  if (state.ownedItems.includes(result.id)) {
+    print("You already own that item."); return;
+  }
+  // Remove ingredients
+  state.ownedItems = state.ownedItems.filter(id => id !== a && id !== b);
+  state.ownedItems.push(result.id);
+  state.craftCount = (state.craftCount || 0) + 1;
+  print(`Crafted ${result.name}!`);
+  render();
+}
+
+// ========== ACHIEVEMENTS ==========
+function renderAchievements() {
+  const box = document.getElementById('achievements-box');
+  if (!box || !state) return;
+  const earned = state.achievements || [];
+  box.innerHTML = ACHIEVEMENTS.map(a => {
+    const unlocked = earned.includes(a.id);
+    return `<span class="achievement-badge ${unlocked ? 'achievement-earned' : ''}">
+      ${a.name}<br><small>${a.desc}</small>
+    </span>`;
+  }).join('');
+}
+
+function checkAchievements() {
+  if (!state) return;
+  let newUnlocks = false;
+  for (const a of ACHIEVEMENTS) {
+    if (!state.achievements.includes(a.id) && a.check(state)) {
+      state.achievements.push(a.id);
+      if (a.reward) {
+        state.gold += a.reward.gold;
+        state.xp += Math.round(a.reward.xp * (state.xpBonus || 1));
+        print(`🏆 Achievement unlocked: ${a.name}! +${a.reward.gold} gold, +${a.reward.xp} XP.`);
+      }
+      newUnlocks = true;
+    }
+  }
+  if (newUnlocks) {
+    checkLevelUp();
+    renderAchievements();
+  }
+}
+
 // ========== DAILY QUEST ==========
 function renderQuest() {
   const box = document.getElementById('quest-box');
@@ -907,7 +1049,7 @@ function claimQuest() {
   render();
 }
 
-// ========== FIGHT SYSTEM (with cooldown) ==========
+// ========== FIGHT SYSTEM ==========
 function fightMonster() {
   if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
   if (!useStamina(10)) return;
@@ -998,7 +1140,7 @@ function checkLevelUp() {
   }
 }
 
-// ========== PVP & ARENA (no level display, fallback names) ==========
+// ========== PVP & ARENA ==========
 function generateBots(playerLevel) {
   const levels = [
     Math.max(1, playerLevel + Math.floor(Math.random()*3)-1),
@@ -1187,7 +1329,7 @@ async function autoAttack() {
   startCooldown(60);
 }
 
-// ========== AMBUSH (AI) ==========
+// ========== AMBUSH ==========
 function aiAmbush() {
   if (!ambushesEnabled) return;
   if (!state || state.hp<=0) return;
@@ -1224,21 +1366,29 @@ function aiAmbush() {
   render();
 }
 
-// ========== LEADERBOARD & BATTLE LOG ==========
+// ========== LEADERBOARD (All Time / Monthly) ==========
 async function refreshLeaderboard() {
   const list = document.getElementById('leaderboard-list');
+  const filter = document.getElementById('leaderboard-filter').value;
   list.innerHTML = 'Loading...';
   try {
     const snap = await db.collection('pvp_public').get();
-    const players = []; snap.forEach(d=>players.push(d.data()));
-    players.sort((a,b)=>b.level-a.level||(b.kills||0)-(a.kills||0));
-    list.innerHTML = players.slice(0,10).map((p,i)=>`
+    let players = [];
+    snap.forEach(d => players.push(d.data()));
+    if (filter === 'monthly') {
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+      players = players.filter(p => p.updated >= monthStart);
+    }
+    players.sort((a,b) => b.level - a.level || (b.kills||0) - (a.kills||0));
+    list.innerHTML = players.slice(0,10).map((p,i) => `
       <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #21262d;${p.uid===currentUser?.uid?'color:#e3b341':''}">
         <span>#${i+1} ${p.username || p.heroDisplay || 'Unknown'} ${p.uid===currentUser?.uid?'(you)':''}</span>
         <span>Lvl ${p.level} | ${p.kills||0} kills</span>
       </div>`).join('') || 'No players yet.';
   } catch(e) { list.innerHTML = 'Error.'; }
 }
+
 async function refreshBattleLog() {
   const list = document.getElementById('battlelog-list');
   if (!currentUser) return;
@@ -1255,6 +1405,40 @@ async function refreshBattleLog() {
       </div>`;
     }).join('') || 'No battles yet.';
   } catch(e) { list.innerHTML = 'Error.'; }
+}
+
+// ========== TAVERN CHAT ==========
+let tavernUnsubscribe = null;
+function startTavernListener() {
+  if (tavernUnsubscribe) tavernUnsubscribe();
+  tavernUnsubscribe = db.collection('chat')
+    .orderBy('timestamp', 'asc')
+    .limitToLast(50)
+    .onSnapshot(snapshot => {
+      const box = document.getElementById('tavern-chat');
+      if (!box) return;
+      box.innerHTML = '';
+      snapshot.forEach(doc => {
+        const msg = doc.data();
+        const time = new Date(msg.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+        box.innerHTML += `<div><b>${msg.username}:</b> ${msg.text} <span style="color:#7d8590;font-size:11px;">${time}</span></div>`;
+      });
+      box.scrollTop = box.scrollHeight;
+    });
+}
+
+function sendChat() {
+  if (!currentUser || !state) return;
+  const input = document.getElementById('tavern-input');
+  const text = input.value.trim();
+  if (!text) return;
+  db.collection('chat').add({
+    uid: currentUser.uid,
+    username: state.username,
+    text: text,
+    timestamp: new Date().toISOString()
+  }).catch(e => print('Chat send failed.'));
+  input.value = '';
 }
 
 // ========== STAMINA TIMER ==========
