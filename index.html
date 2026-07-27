@@ -9,7 +9,7 @@
   body {
     background: #0b0d10; color: #c9d1d9;
     font-family: 'Courier New', monospace;
-    max-width: 700px; margin: 20px auto;
+    max-width: 750px; margin: 20px auto;
     padding: 0 15px;
     line-height: 1.5;
   }
@@ -132,6 +132,19 @@
     border-color: #e3b341; color: #e3b341;
     background: #1c1608;
   }
+  .guild-member {
+    display: flex; justify-content: space-between;
+    padding: 4px 0; border-bottom: 1px solid #21262d;
+  }
+  .avatar-picker {
+    display: flex; gap: 10px; flex-wrap: wrap;
+    margin: 10px 0;
+  }
+  .avatar-emoji {
+    font-size: 1.5rem; cursor: pointer;
+    padding: 4px; border: 1px solid transparent;
+  }
+  .avatar-emoji.selected { border-color: #e3b341; }
   @media (max-width: 500px) {
     h1 { font-size: 1.4rem; }
     button { padding: 10px 8px; font-size: 0.85rem; }
@@ -168,8 +181,10 @@
     <button onclick="toggleMusic()" id="musicBtn">Play Nature Sounds</button>
     <span id="cooldown-display" style="color:#e3b341; font-weight:bold;"></span>
     <span class="settings-toggle" onclick="toggleSettings()">⚙️ Settings</span>
+    <button onclick="toggleProfile()">👤 Profile</button>
   </div>
 
+  <!-- Settings panel -->
   <div id="settings-panel" class="panel">
     <div class="section-title" style="margin-top:0;">Settings</div>
     <div class="setting-row">
@@ -194,6 +209,22 @@
     </div>
   </div>
 
+  <!-- Profile customization -->
+  <div id="profile-panel" class="panel" style="display:none;">
+    <div class="section-title">Customize Profile</div>
+    <div>Avatar:</div>
+    <div class="avatar-picker" id="avatar-picker"></div>
+    <div style="margin:10px 0;">Theme Color:</div>
+    <select id="theme-select" onchange="changeTheme(this.value)">
+      <option value="#e3b341">Gold</option>
+      <option value="#58a6ff">Blue</option>
+      <option value="#3fb950">Green</option>
+      <option value="#f85149">Red</option>
+      <option value="#c9d1d9">Silver</option>
+    </select>
+    <button onclick="saveProfile()" style="margin-top:10px;">Save</button>
+  </div>
+
   <!-- Wallet -->
   <div class="panel">
     <div id="wallet-status">Wallet not connected</div>
@@ -204,6 +235,9 @@
     </div>
     <div style="color:#7d8590;font-size:12px;">Rate: 100 gold = 1 TRI</div>
   </div>
+
+  <!-- Current Event -->
+  <div id="event-banner" class="panel" style="color:#e3b341; font-weight:bold; text-align:center;"></div>
 
   <div id="rank"></div>
   <div id="stats"></div>
@@ -237,9 +271,16 @@
     <button onclick="fightBoss()" class="action-btn">Challenge Today's Boss (-30 STA)</button>
   </div>
 
+  <!-- Dungeon -->
+  <div class="section-title">🏰 Dungeon (daily attempt)</div>
+  <div id="dungeon-box" class="panel"></div>
+
   <!-- Shop -->
   <div class="section-title">Shop</div>
   <div id="shop-box" class="panel"></div>
+
+  <!-- Mystery Merchant (conditional) -->
+  <div id="mystery-merchant" class="panel" style="display:none;"></div>
 
   <!-- Crafting -->
   <div class="section-title">Crafting</div>
@@ -252,6 +293,10 @@
   <!-- Achievements -->
   <div class="section-title">Achievements</div>
   <div id="achievements-box" class="panel"></div>
+
+  <!-- Guild -->
+  <div class="section-title">🛡️ Guild</div>
+  <div id="guild-panel" class="panel"></div>
 
   <!-- PvP Arena -->
   <div class="section-title">PvP Arena</div>
@@ -339,7 +384,6 @@ const PUBLISH_THROTTLE_MS = 30000;
 let actionCooldownRemaining = 0;
 let cooldownInterval = null;
 
-// Nature ambient
 let natureSource = null;
 let natureGain = null;
 let naturePlaying = false;
@@ -374,19 +418,29 @@ const ACHIEVEMENTS = [
   { id:'craft20', name:'Master Crafter', desc:'Craft 20 times', check: s => (s.craftCount||0) >= 20, reward: {gold:100, xp:30} }
 ];
 
-// Crafting recipes
 const CRAFT_RECIPES = [
   { ingredients: ['iron_sword','steel_shield'], result: 'warrior_plate' },
   { ingredients: ['dragon_fang','phoenix_heart'], result: 'dragonheart_amulet' },
   { ingredients: ['vigor_ring','elixir_ages'], result: 'eternal_ring' }
 ];
-
-// Additional crafted items definitions
 const CRAFTED_ITEMS = {
   warrior_plate: { id:'warrior_plate', name:'Warrior’s Plate', desc:'+4 STR, +4 DEF, +20 HP', price:999, type:'equipment', slot:'armor', str:4, def:4, maxhp:20 },
   dragonheart_amulet: { id:'dragonheart_amulet', name:'Dragonheart Amulet', desc:'+10 STR, +50 HP', price:999, type:'equipment', slot:'accessory', str:10, maxhp:50 },
   eternal_ring: { id:'eternal_ring', name:'Eternal Ring', desc:'+40 HP, +5 STR, +5 DEF', price:999, type:'equipment', slot:'accessory', maxhp:40, str:5, def:5 }
 };
+
+// Daily events
+const EVENTS = [
+  { type:'double_xp', name:'Double XP', desc:'All XP gains doubled!' },
+  { type:'half_stamina', name:'Half Stamina', desc:'Training/hunting costs halved!' },
+  { type:'lucky_loot', name:'Lucky Loot', desc:'Extra loot roll after kills.' },
+  { type:'mystery_merchant', name:'Mystery Merchant', desc:'A special shop appears!' }
+];
+let currentEvent = null;
+let eventEndTime = 0;
+
+// Avatars
+const AVATARS = ['🧙','⚔️','🛡️','🏹','🐉','👻','😈','👑','🔥','💀','🌿','🌟'];
 
 // ========== SOUND ENGINE ==========
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -420,14 +474,12 @@ function sfxDefeat() { playTone(100, 'sawtooth', 0.3, 0.12); }
 function sfxLevelUp() { playTone(1000, 'triangle', 0.3, 0.15); playTone(1500, 'triangle', 0.3, 0.15); }
 function sfxAmbush() { playTone(80, 'sawtooth', 0.2, 0.15); }
 
-// ========== NATURE AMBIENT GENERATOR ==========
+// ========== NATURE AMBIENT ==========
 function createNoiseBuffer() {
   const bufferSize = 2 * audioCtx.sampleRate;
   const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
   const data = buffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) {
-    data[i] = Math.random() * 2 - 1;
-  }
+  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
   return buffer;
 }
 function startNatureAmbient() {
@@ -498,6 +550,35 @@ function changeUsername() {
   render();
 }
 
+// Profile
+function toggleProfile() {
+  const panel = document.getElementById('profile-panel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  if (panel.style.display === 'block') {
+    renderAvatarPicker();
+    document.getElementById('theme-select').value = state.theme || '#e3b341';
+  }
+}
+function renderAvatarPicker() {
+  const picker = document.getElementById('avatar-picker');
+  picker.innerHTML = AVATARS.map(a =>
+    `<span class="avatar-emoji ${state.avatar===a?'selected':''}" onclick="selectAvatar('${a}')">${a}</span>`
+  ).join('');
+}
+function selectAvatar(emoji) {
+  document.querySelectorAll('.avatar-emoji').forEach(el => el.classList.remove('selected'));
+  event.target.classList.add('selected');
+}
+function changeTheme(color) { /* preview only */ }
+function saveProfile() {
+  const selected = document.querySelector('.avatar-emoji.selected');
+  if (selected) state.avatar = selected.textContent;
+  state.theme = document.getElementById('theme-select').value;
+  document.getElementById('profile-panel').style.display = 'none';
+  print('Profile updated!');
+  render();
+}
+
 // ========== COOLDOWN ==========
 function startCooldown(seconds) {
   actionCooldownRemaining = seconds;
@@ -526,9 +607,7 @@ function updateCooldownDisplay() {
   }
 }
 function setActionButtonsDisabled(disabled) {
-  document.querySelectorAll('.action-btn').forEach(btn => {
-    btn.disabled = disabled;
-  });
+  document.querySelectorAll('.action-btn').forEach(btn => btn.disabled = disabled);
 }
 
 // ========== AUTH ==========
@@ -565,6 +644,8 @@ auth.onAuthStateChanged(async user => {
       loadSettings();
       if (musicVolume > 0) startNatureAmbient();
       startTavernListener();
+      updateEvent();
+      renderGuild();
     } else {
       document.getElementById('hero-select').style.display = 'block';
       renderHeroSelect();
@@ -604,7 +685,10 @@ function selectHero(id) {
     lastBossDate:null,
     tournamentDate:null, tournamentWins:0, tournamentClaimed:false,
     achievements: [],
-    craftCount: 0
+    craftCount: 0,
+    avatar: '⚔️', theme: '#e3b341',
+    guildId: null,
+    dungeonDate: null, dungeonProgress: 0, dungeonRetreated: false
   };
   pendingUsername = null;
   document.getElementById('hero-select').style.display = 'none';
@@ -616,6 +700,7 @@ function selectHero(id) {
   loadSettings();
   if (musicVolume > 0) startNatureAmbient();
   startTavernListener();
+  updateEvent();
 }
 
 // ========== HELPERS ==========
@@ -632,8 +717,10 @@ function todayKey() {
   return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;
 }
 function useStamina(cost) {
-  if (state.stamina < cost) { print(`Not enough stamina.`); return false; }
-  state.stamina -= cost;
+  let finalCost = cost;
+  if (currentEvent?.type === 'half_stamina') finalCost = Math.ceil(cost / 2);
+  if (state.stamina < finalCost) { print(`Not enough stamina (need ${finalCost}).`); return false; }
+  state.stamina -= finalCost;
   return true;
 }
 function getEquippedStats() {
@@ -653,7 +740,8 @@ function getEquippedStats() {
   return bonus;
 }
 function getOpponentDisplay(opp) {
-  return opp.heroDisplay || opp.username || opp.name || 'Unknown';
+  const avatar = opp.avatar || '';
+  return avatar + ' ' + (opp.heroDisplay || opp.username || opp.name || 'Unknown');
 }
 
 // ========== RENDER & SAVE ==========
@@ -664,7 +752,7 @@ function render() {
   const totalDef = state.def + eq.def;
   const totalMaxHp = state.maxhp + eq.maxhp;
   document.getElementById('rank').textContent =
-    `${state.username} the ${state.name} | Lvl ${state.level} | Kills: ${state.kills} | Gold: ${state.gold}`;
+    `${state.avatar||'⚔️'} ${state.username} the ${state.name} | Lvl ${state.level} | Kills: ${state.kills} | Gold: ${state.gold}`;
   document.getElementById('stats').innerHTML = `
     <div class="stat"><b>STR:</b> ${totalStr} (base ${state.str} + ${eq.str})</div>
     <div class="stat"><b>DEF:</b> ${totalDef} (base ${state.def} + ${eq.def})</div>
@@ -680,6 +768,10 @@ function render() {
   renderInventory();
   renderAchievements();
   renderQuest();
+  renderDungeon();
+  renderGuild();
+  updateEventDisplay();
+  renderMysteryMerchant();
   const now = Date.now();
   if (now - lastPublishTime > PUBLISH_THROTTLE_MS) {
     publishToArena();
@@ -713,6 +805,11 @@ async function load() {
       if (state.tournamentClaimed === undefined) state.tournamentClaimed = false;
       if (!state.achievements) state.achievements = [];
       if (state.craftCount === undefined) state.craftCount = 0;
+      if (!state.avatar) state.avatar = '⚔️';
+      if (!state.theme) state.theme = '#e3b341';
+      if (!state.guildId) state.guildId = null;
+      if (!state.dungeonDate) state.dungeonDate = null;
+      if (!state.dungeonProgress) state.dungeonProgress = 0;
       document.getElementById('hero-select').style.display = 'none';
       document.getElementById('game-ui').style.display = 'block';
       print("Welcome back.");
@@ -899,6 +996,29 @@ function renderShop() {
   box.innerHTML = featuredHtml + regularHtml;
 }
 
+function renderMysteryMerchant() {
+  const box = document.getElementById('mystery-merchant');
+  if (!box || !state) return;
+  if (currentEvent?.type !== 'mystery_merchant') {
+    box.style.display = 'none';
+    return;
+  }
+  box.style.display = 'block';
+  const items = [...SHOP_ITEMS.slice(2), ...FEATURED_ITEMS].sort(()=>Math.random()-0.5).slice(0,3);
+  const discounted = items.map(item => ({
+    ...item,
+    price: Math.floor(item.price * 0.7)
+  }));
+  box.innerHTML = '<div class="section-title" style="margin-top:0;">🧙 Mystery Merchant</div>' +
+    discounted.map(item => {
+      const owned = state.ownedItems.includes(item.id);
+      return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #21262d;">
+        <span><b>${item.name}</b> ${item.desc} (<span style="color:#3fb950;">${item.price}g</span>)</span>
+        <button ${owned?'disabled':''} onclick="buyItem('${item.id}')">${owned?'Owned':'Buy'}</button>
+      </div>`;
+    }).join('');
+}
+
 function renderInventory() {
   const box = document.getElementById('inventory-box');
   if (!box || !state) return;
@@ -948,9 +1068,7 @@ function buyItem(itemId) {
     print(`Used ${item.name}.`);
   } else {
     state.ownedItems.push(itemId);
-    if (item.slot && !state.equipped[item.slot]) {
-      state.equipped[item.slot] = itemId;
-    }
+    if (item.slot && !state.equipped[item.slot]) state.equipped[item.slot] = itemId;
     print(`Purchased ${item.name}.`);
   }
   sfxBuy();
@@ -986,7 +1104,6 @@ function craftItem(recipeIndex) {
   if (state.ownedItems.includes(result.id)) {
     print("You already own that item."); return;
   }
-  // Remove ingredients
   state.ownedItems = state.ownedItems.filter(id => id !== a && id !== b);
   state.ownedItems.push(result.id);
   state.craftCount = (state.craftCount || 0) + 1;
@@ -1009,7 +1126,6 @@ function renderAchievements() {
 
 function checkAchievements() {
   if (!state) return;
-  let newUnlocks = false;
   for (const a of ACHIEVEMENTS) {
     if (!state.achievements.includes(a.id) && a.check(state)) {
       state.achievements.push(a.id);
@@ -1018,12 +1134,7 @@ function checkAchievements() {
         state.xp += Math.round(a.reward.xp * (state.xpBonus || 1));
         print(`🏆 Achievement unlocked: ${a.name}! +${a.reward.gold} gold, +${a.reward.xp} XP.`);
       }
-      newUnlocks = true;
     }
-  }
-  if (newUnlocks) {
-    checkLevelUp();
-    renderAchievements();
   }
 }
 
@@ -1049,11 +1160,18 @@ function claimQuest() {
   render();
 }
 
-// ========== FIGHT SYSTEM ==========
+// ========== FIGHT SYSTEM (with event modifiers) ==========
+function getXpMultiplier() {
+  return (currentEvent?.type === 'double_xp' ? 2 : 1) * (state.xpBonus || 1);
+}
+
 function fightMonster() {
   if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
   if (!useStamina(10)) return;
   initAudio();
+  // Rare monster spawn chance during events
+  let rare = false;
+  if (currentEvent && currentEvent.type !== 'mystery_merchant' && Math.random() < 0.15) rare = true;
   const monsters = [
     {name:"Goblin", hp:15, atk:3, xp:8, gold:5},
     {name:"Wild Boar", hp:20, atk:4, xp:10, gold:7},
@@ -1062,35 +1180,362 @@ function fightMonster() {
     {name:"Orc Brute", hp:40, atk:8, xp:26, gold:20}
   ];
   const tier = Math.min(monsters.length-1, Math.floor(state.level/2));
-  const m = {...monsters[tier]};
-  print(`A ${m.name} attacks!`);
+  let m = {...monsters[tier]};
+  if (rare) {
+    m.name = `Rare ${m.name}`;
+    m.hp *= 2; m.atk += 3; m.xp *= 2; m.gold *= 2;
+    print(`A rare ${m.name} appears!`);
+  } else {
+    print(`A ${m.name} attacks!`);
+  }
   const eq = getEquippedStats();
   let myHp = state.hp, oppHp = m.hp;
   while (oppHp>0 && myHp>0) {
     const dmg = Math.max(1, (state.str+eq.str)*2 - Math.floor(Math.random()*3));
-    oppHp -= dmg;
-    print(`You hit for ${dmg}.`); sfxHit();
+    oppHp -= dmg; print(`You hit for ${dmg}.`); sfxHit();
     if (oppHp<=0) break;
     const mdmg = Math.max(1, m.atk - Math.floor((state.def+eq.def)/2));
-    myHp -= mdmg;
-    print(`${m.name} hits for ${mdmg}.`);
+    myHp -= mdmg; print(`${m.name} hits for ${mdmg}.`);
   }
   if (myHp<=0) {
     state.hp = 1; print("You retreat."); sfxDefeat();
   } else {
     state.hp = myHp;
     state.kills++;
-    state.xp += Math.round(m.xp*(state.xpBonus||1));
+    const xpGain = Math.round(m.xp * getXpMultiplier());
+    state.xp += xpGain;
     state.gold += m.gold;
     if (state.questDate===todayKey()) state.questProgress++;
-    print(`Victory! +${m.xp} XP, +${m.gold} gold.`); sfxVictory();
+    print(`Victory! +${xpGain} XP, +${m.gold} gold.`); sfxVictory();
     rollLoot();
+    if (currentEvent?.type === 'lucky_loot') rollLoot();
+    // Guild quest contribution
+    if (state.guildId) contributeToGuildQuest();
     checkLevelUp();
   }
   startCooldown(60);
   render();
 }
 
+// ========== DUNGEON CRAWL ==========
+function renderDungeon() {
+  const box = document.getElementById('dungeon-box');
+  if (!box || !state) return;
+  const today = todayKey();
+  if (state.dungeonDate !== today) {
+    state.dungeonDate = today;
+    state.dungeonProgress = 0;
+    state.dungeonRetreated = false;
+  }
+  if (state.dungeonProgress === 0) {
+    box.innerHTML = `<div>🏰 Daily Dungeon Run (1 attempt remaining)</div>
+      <button class="action-btn" onclick="startDungeon()">Enter Dungeon (-30 STA)</button>`;
+  } else if (state.dungeonProgress > 0 && state.dungeonProgress <= 3) {
+    box.innerHTML = `<div>Wave ${state.dungeonProgress}/3</div>
+      <button class="action-btn" onclick="fightDungeonWave()">Fight Wave</button>
+      <button class="action-btn" onclick="retreatDungeon()">Retreat (keep loot)</button>`;
+  } else if (state.dungeonProgress === 4) {
+    box.innerHTML = `<div>Final Boss!</div>
+      <button class="action-btn" onclick="fightDungeonBoss()">Fight Boss</button>`;
+  }
+}
+function startDungeon() {
+  if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
+  if (state.dungeonDate !== todayKey()) { state.dungeonDate = todayKey(); state.dungeonProgress = 0; }
+  if (state.dungeonProgress !== 0) { print("You already attempted the dungeon today."); return; }
+  if (!useStamina(30)) return;
+  state.dungeonProgress = 1;
+  print("You enter the dark dungeon...");
+  startCooldown(60);
+  render();
+}
+function fightDungeonWave() {
+  if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
+  if (state.dungeonProgress < 1 || state.dungeonProgress > 3) return;
+  const wave = state.dungeonProgress;
+  const monster = {
+    name: `Dungeon Guardian ${wave}`,
+    hp: 20 + wave * 10 + state.level * 2,
+    atk: 4 + wave * 2,
+    xp: 10 + wave * 5,
+    gold: 8 + wave * 3
+  };
+  print(`Wave ${wave}: ${monster.name} appears!`);
+  initAudio();
+  const eq = getEquippedStats();
+  let myHp = state.hp, oppHp = monster.hp;
+  while (oppHp>0 && myHp>0) {
+    const dmg = Math.max(1, (state.str+eq.str)*2 - Math.floor(Math.random()*3));
+    oppHp -= dmg; sfxHit();
+    if (oppHp<=0) break;
+    const mdmg = Math.max(1, monster.atk - Math.floor((state.def+eq.def)/2));
+    myHp -= mdmg;
+  }
+  if (myHp<=0) {
+    state.hp = 1;
+    const goldConsolation = 5 + wave * 2;
+    state.gold += goldConsolation;
+    state.dungeonProgress = 0; // failed
+    print(`You were defeated in the dungeon. Received ${goldConsolation} gold.`);
+    sfxDefeat();
+  } else {
+    state.hp = myHp;
+    state.gold += monster.gold;
+    state.xp += Math.round(monster.xp * getXpMultiplier());
+    state.kills++;
+    print(`Wave ${wave} cleared! +${monster.gold} gold, +${monster.xp} XP.`);
+    sfxVictory();
+    state.dungeonProgress++;
+    if (state.dungeonProgress > 3) state.dungeonProgress = 4;
+    checkLevelUp();
+  }
+  startCooldown(60);
+  render();
+}
+function retreatDungeon() {
+  if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
+  state.dungeonProgress = 0;
+  state.dungeonRetreated = true;
+  print("You retreat from the dungeon, keeping your earned loot.");
+  startCooldown(60);
+  render();
+}
+function fightDungeonBoss() {
+  if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
+  if (state.dungeonProgress !== 4) return;
+  const boss = {
+    name: 'Dungeon Overlord',
+    hp: 50 + state.level * 10,
+    atk: 10 + state.level,
+    xp: 50,
+    gold: 50
+  };
+  print(`The final boss ${boss.name} awaits!`);
+  initAudio();
+  const eq = getEquippedStats();
+  let myHp = state.hp, bossHp = boss.hp;
+  while (bossHp>0 && myHp>0) {
+    const dmg = Math.max(1, (state.str+eq.str)*2 - Math.floor(Math.random()*3));
+    bossHp -= dmg; sfxHit();
+    if (bossHp<=0) break;
+    const bdmg = Math.max(1, boss.atk - Math.floor((state.def+eq.def)/2));
+    myHp -= bdmg;
+  }
+  if (myHp<=0) {
+    state.hp = 1;
+    const goldConsolation = 20;
+    state.gold += goldConsolation;
+    print(`Defeated by the boss. Received ${goldConsolation} gold.`);
+    sfxDefeat();
+  } else {
+    state.hp = myHp;
+    state.gold += boss.gold;
+    state.xp += Math.round(boss.xp * getXpMultiplier());
+    state.kills++;
+    print(`Dungeon complete! Defeated ${boss.name}! +${boss.gold} gold, +${boss.xp} XP.`);
+    sfxVictory();
+    // guaranteed rare item
+    const rareItem = FEATURED_ITEMS[Math.floor(Math.random()*FEATURED_ITEMS.length)];
+    if (!state.ownedItems.includes(rareItem.id)) {
+      state.ownedItems.push(rareItem.id);
+      print(`You found a ${rareItem.name} in the treasure room!`);
+    }
+    checkLevelUp();
+  }
+  state.dungeonProgress = 0;
+  startCooldown(60);
+  render();
+}
+
+// ========== GUILDS ==========
+async function renderGuild() {
+  const panel = document.getElementById('guild-panel');
+  if (!panel || !state) return;
+  if (!state.guildId) {
+    panel.innerHTML = `<button onclick="createGuild()">Create Guild (500g)</button>
+      <button onclick="showGuildList()">Join Guild</button>`;
+    return;
+  }
+  try {
+    const guildDoc = await db.collection('guilds').doc(state.guildId).get();
+    if (!guildDoc.exists) {
+      state.guildId = null;
+      render();
+      return;
+    }
+    const guild = guildDoc.data();
+    const isLeader = guild.leaderUid === currentUser.uid;
+    const membersHtml = guild.members.map(m =>
+      `<div class="guild-member"><span>${m.avatar||''} ${m.username}</span><span>${m.uid === guild.leaderUid ? 'Leader' : ''}</span></div>`
+    ).join('');
+    const weekTarget = guild.members.length * 10;
+    const questDone = guild.weeklyQuestProgress >= weekTarget && guild.weeklyQuestDate === todayKey();
+    panel.innerHTML = `
+      <b>${guild.name}</b> | Treasury: ${guild.treasury} gold
+      <div style="margin:6px 0;">Members (${guild.members.length}):</div>
+      ${membersHtml}
+      <div style="margin-top:8px;">Weekly Quest: Kill monsters (${guild.weeklyQuestProgress||0}/${weekTarget})</div>
+      <div class="btnrow" style="margin-top:8px;">
+        <button onclick="contributeToGuild()">Contribute 50g</button>
+        ${questDone && !guild.weeklyQuestClaimed ? `<button onclick="claimGuildQuest()">Claim Quest Reward</button>` : ''}
+        ${isLeader ? `<button onclick="declareWarPrompt()">Declare War (200g)</button>` : ''}
+        <button onclick="leaveGuild()">Leave Guild</button>
+      </div>`;
+  } catch(e) {
+    panel.innerHTML = 'Error loading guild.';
+  }
+}
+
+async function createGuild() {
+  const name = prompt('Enter guild name:');
+  if (!name) return;
+  if (state.gold < 500) { print('Need 500 gold.'); return; }
+  // Check unique name
+  const existing = await db.collection('guilds').where('name','==',name).get();
+  if (!existing.empty) { print('Guild name already exists.'); return; }
+  state.gold -= 500;
+  const guildRef = db.collection('guilds').doc();
+  await guildRef.set({
+    name,
+    leaderUid: currentUser.uid,
+    members: [{ uid: currentUser.uid, username: state.username, avatar: state.avatar }],
+    treasury: 0,
+    weeklyQuestProgress: 0,
+    weeklyQuestDate: todayKey(),
+    weeklyQuestClaimed: false
+  });
+  state.guildId = guildRef.id;
+  print(`Guild ${name} created!`);
+  render();
+}
+
+async function showGuildList() {
+  if (state.gold < 100) { print('Need 100 gold to join a guild.'); return; }
+  const snapshot = await db.collection('guilds').get();
+  const guilds = [];
+  snapshot.forEach(doc => guilds.push({ id: doc.id, ...doc.data() }));
+  if (guilds.length === 0) { print('No guilds available.'); return; }
+  const list = guilds.map(g => `${g.name} (${g.members.length} members)`).join('\n');
+  const choice = prompt('Choose guild to join (type name):\n' + list);
+  const guild = guilds.find(g => g.name === choice);
+  if (!guild) return;
+  state.gold -= 100;
+  // Join guild
+  await db.collection('guilds').doc(guild.id).update({
+    members: firebase.firestore.FieldValue.arrayUnion({
+      uid: currentUser.uid, username: state.username, avatar: state.avatar
+    })
+  });
+  state.guildId = guild.id;
+  print(`Joined ${guild.name}!`);
+  render();
+}
+
+async function contributeToGuild() {
+  if (state.gold < 50) { print('Need 50 gold.'); return; }
+  state.gold -= 50;
+  await db.collection('guilds').doc(state.guildId).update({
+    treasury: firebase.firestore.FieldValue.increment(50)
+  });
+  print('Contributed 50 gold to guild treasury.');
+  render();
+}
+
+async function contributeToGuildQuest() {
+  if (!state.guildId) return;
+  const guildRef = db.collection('guilds').doc(state.guildId);
+  const guildDoc = await guildRef.get();
+  if (!guildDoc.exists) return;
+  const guild = guildDoc.data();
+  if (guild.weeklyQuestDate !== todayKey()) {
+    await guildRef.update({ weeklyQuestProgress: 1, weeklyQuestDate: todayKey(), weeklyQuestClaimed: false });
+  } else {
+    await guildRef.update({ weeklyQuestProgress: firebase.firestore.FieldValue.increment(1) });
+  }
+}
+
+async function claimGuildQuest() {
+  const guildRef = db.collection('guilds').doc(state.guildId);
+  const guildDoc = await guildRef.get();
+  const guild = guildDoc.data();
+  const weekTarget = guild.members.length * 10;
+  if (guild.weeklyQuestProgress < weekTarget || guild.weeklyQuestDate !== todayKey() || guild.weeklyQuestClaimed) {
+    print('Quest not ready or already claimed.');
+    return;
+  }
+  await guildRef.update({ weeklyQuestClaimed: true });
+  state.gold += 100;
+  state.xp += Math.round(30 * (state.xpBonus||1));
+  print(`Guild quest completed! +100 gold, +30 XP.`);
+  checkLevelUp();
+  render();
+}
+
+async function declareWarPrompt() {
+  const targetName = prompt('Enter guild name to war:');
+  if (!targetName) return;
+  const snapshot = await db.collection('guilds').where('name','==',targetName).get();
+  if (snapshot.empty) { print('Guild not found.'); return; }
+  const targetDoc = snapshot.docs[0];
+  const targetGuild = targetDoc.data();
+  const guildRef = db.collection('guilds').doc(state.guildId);
+  const guildDoc = await guildRef.get();
+  const guild = guildDoc.data();
+  if (guild.treasury < 200) { print('Guild treasury needs 200 gold.'); return; }
+  await guildRef.update({ treasury: firebase.firestore.FieldValue.increment(-200) });
+  print(`War declared on ${targetGuild.name}! Resolving in 5 minutes...`);
+  setTimeout(async () => {
+    // Resolve war
+    const gDoc = await guildRef.get();
+    const tDoc = await targetDoc.ref.get();
+    if (!gDoc.exists || !tDoc.exists) return;
+    const g = gDoc.data(); const t = tDoc.data();
+    const gAvg = g.members.reduce((s,m) => s + (m.level||1), 0) / g.members.length;
+    const tAvg = t.members.reduce((s,m) => s + (m.level||1), 0) / t.members.length;
+    if (gAvg > tAvg) {
+      const steal = Math.floor(t.treasury * 0.3);
+      await guildRef.update({ treasury: firebase.firestore.FieldValue.increment(steal) });
+      await targetDoc.ref.update({ treasury: firebase.firestore.FieldValue.increment(-steal) });
+      print(`War won! Stole ${steal} gold from ${t.name}.`);
+    } else {
+      print(`War lost against ${t.name}.`);
+    }
+  }, 300000);
+}
+
+async function leaveGuild() {
+  if (!state.guildId) return;
+  await db.collection('guilds').doc(state.guildId).update({
+    members: firebase.firestore.FieldValue.arrayRemove({ uid: currentUser.uid, username: state.username, avatar: state.avatar })
+  });
+  state.guildId = null;
+  print('Left guild.');
+  render();
+}
+
+// ========== DAILY EVENTS ==========
+function updateEvent() {
+  const now = Math.floor(Date.now() / 1000);
+  const period = 1800; // 30 minutes
+  const slot = Math.floor(now / period);
+  const eventIndex = slot % EVENTS.length;
+  currentEvent = EVENTS[eventIndex];
+  eventEndTime = (slot + 1) * period * 1000;
+}
+function updateEventDisplay() {
+  const banner = document.getElementById('event-banner');
+  if (!banner) return;
+  const remaining = Math.max(0, Math.floor((eventEndTime - Date.now()) / 1000));
+  const mins = Math.floor(remaining / 60);
+  const secs = remaining % 60;
+  banner.innerHTML = `⚡ ${currentEvent.name} – ${currentEvent.desc} (${mins}m ${secs}s)`;
+}
+setInterval(() => {
+  updateEvent();
+  updateEventDisplay();
+}, 60000);
+
+// ========== BOSS FIGHT ==========
 function fightBoss() {
   if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
   if (!state) return;
@@ -1118,10 +1563,11 @@ function fightBoss() {
     print("You were crushed."); sfxDefeat();
   } else {
     const goldWon = 80+state.level*10;
-    const xpWon = Math.round((40+state.level*5)*(state.xpBonus||1));
+    const xpWon = Math.round((40+state.level*5) * getXpMultiplier());
     state.gold += goldWon; state.xp += xpWon; state.kills++;
     print(`Boss down! +${goldWon}g, +${xpWon} XP.`); sfxVictory();
     rollLoot(); rollLoot();
+    if (currentEvent?.type === 'lucky_loot') rollLoot();
     checkLevelUp();
   }
   startCooldown(60);
@@ -1192,6 +1638,7 @@ async function publishToArena() {
       uid: currentUser.uid,
       username: state.username,
       heroDisplay: state.name,
+      avatar: state.avatar,
       level: state.level,
       str: state.str + getEquippedStats().str,
       def: state.def + getEquippedStats().def,
@@ -1232,10 +1679,11 @@ function fightPlayer(index) {
   } else {
     state.hp = myHp;
     const goldWon = 15 + opp.level*3;
-    const xpWon = Math.round((10+opp.level*2)*(state.xpBonus||1));
+    const xpWon = Math.round((10+opp.level*2) * getXpMultiplier());
     state.gold += goldWon; state.xp += xpWon; state.kills++;
     print(`Victory! +${goldWon}g, +${xpWon} XP.`); sfxVictory();
     rollLoot();
+    if (currentEvent?.type === 'lucky_loot') rollLoot();
     logBattle(opp, 'win');
     if (opp.uid && !opp.isBot) {
       const today = todayKey();
@@ -1257,11 +1705,7 @@ async function updateTournamentLeader(wins) {
     await db.runTransaction(async t => {
       const doc = await t.get(leaderRef);
       if (!doc.exists || wins > (doc.data().topWins || 0)) {
-        t.set(leaderRef, {
-          topUid: currentUser.uid,
-          topWins: wins,
-          claimed: false
-        }, {merge: true});
+        t.set(leaderRef, { topUid: currentUser.uid, topWins: wins, claimed: false }, {merge: true});
       }
     });
   } catch(e){}
@@ -1282,18 +1726,14 @@ async function claimTournament() {
       if (data.topUid !== currentUser.uid) throw new Error("You are not the champion.");
       t.update(leaderRef, { claimed: true });
       state.tournamentClaimed = true;
-      const goldWon = 150;
-      const xpWon = Math.round(60*(state.xpBonus||1));
-      state.gold += goldWon;
-      state.xp += xpWon;
-      print(`*** Tournament Champion! +${goldWon}g, +${xpWon} XP. ***`);
+      state.gold += 150;
+      state.xp += Math.round(60 * getXpMultiplier());
+      print(`*** Tournament Champion! +150g, +60 XP. ***`);
       sfxLevelUp();
       checkLevelUp();
       render();
     });
-  } catch(e) {
-    print(e.message);
-  }
+  } catch(e) { print(e.message); }
 }
 
 async function logBattle(opp, result, aiInitiated=false) {
@@ -1357,7 +1797,7 @@ function aiAmbush() {
   } else {
     state.hp = myHp;
     const goldWon = 10+lvl*2;
-    const xpWon = Math.round((8+lvl)*(state.xpBonus||1));
+    const xpWon = Math.round((8+lvl) * getXpMultiplier());
     state.gold += goldWon; state.xp += xpWon;
     print(`Ambush repelled! +${goldWon}g, +${xpWon} XP.`); sfxVictory();
     logBattle(bot, 'loss', true);
@@ -1366,7 +1806,7 @@ function aiAmbush() {
   render();
 }
 
-// ========== LEADERBOARD (All Time / Monthly) ==========
+// ========== LEADERBOARD ==========
 async function refreshLeaderboard() {
   const list = document.getElementById('leaderboard-list');
   const filter = document.getElementById('leaderboard-filter').value;
@@ -1383,7 +1823,7 @@ async function refreshLeaderboard() {
     players.sort((a,b) => b.level - a.level || (b.kills||0) - (a.kills||0));
     list.innerHTML = players.slice(0,10).map((p,i) => `
       <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #21262d;${p.uid===currentUser?.uid?'color:#e3b341':''}">
-        <span>#${i+1} ${p.username || p.heroDisplay || 'Unknown'} ${p.uid===currentUser?.uid?'(you)':''}</span>
+        <span>#${i+1} ${p.avatar||''} ${p.username || p.heroDisplay || 'Unknown'} ${p.uid===currentUser?.uid?'(you)':''}</span>
         <span>Lvl ${p.level} | ${p.kills||0} kills</span>
       </div>`).join('') || 'No players yet.';
   } catch(e) { list.innerHTML = 'Error.'; }
@@ -1421,12 +1861,11 @@ function startTavernListener() {
       snapshot.forEach(doc => {
         const msg = doc.data();
         const time = new Date(msg.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-        box.innerHTML += `<div><b>${msg.username}:</b> ${msg.text} <span style="color:#7d8590;font-size:11px;">${time}</span></div>`;
+        box.innerHTML += `<div><b>${msg.avatar||''} ${msg.username}:</b> ${msg.text} <span style="color:#7d8590;font-size:11px;">${time}</span></div>`;
       });
       box.scrollTop = box.scrollHeight;
     });
 }
-
 function sendChat() {
   if (!currentUser || !state) return;
   const input = document.getElementById('tavern-input');
@@ -1435,6 +1874,7 @@ function sendChat() {
   db.collection('chat').add({
     uid: currentUser.uid,
     username: state.username,
+    avatar: state.avatar,
     text: text,
     timestamp: new Date().toISOString()
   }).catch(e => print('Chat send failed.'));
@@ -1474,6 +1914,7 @@ function resetGame() {
 window.addEventListener('load', () => {
   initAudio();
   loadSettings();
+  updateEvent();
   document.body.addEventListener('click', initAudio, {once:true});
 });
 </script>
