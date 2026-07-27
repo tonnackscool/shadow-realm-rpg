@@ -127,6 +127,11 @@
 
 <!-- Game UI -->
 <div id="game-ui" style="display:none;">
+  <!-- Music toggle & cooldown -->
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <button onclick="toggleMusic()" id="musicBtn">Toggle Music</button>
+    <span id="cooldown-display" style="color:#e3b341; font-weight:bold;"></span>
+  </div>
   <!-- Wallet -->
   <div class="panel">
     <div id="wallet-status">Wallet not connected</div>
@@ -145,18 +150,18 @@
 
   <!-- Training -->
   <div class="section-title">Train (uses stamina)</div>
-  <div class="btnrow">
-    <button onclick="train('str')">Train Strength (-5 STA)</button>
-    <button onclick="train('def')">Train Defense (-5 STA)</button>
-    <button onclick="train('hp')">Train Vitality (-8 STA)</button>
+  <div class="btnrow" id="train-btns">
+    <button onclick="train('str')" class="action-btn">Train Strength (-5 STA)</button>
+    <button onclick="train('def')" class="action-btn">Train Defense (-5 STA)</button>
+    <button onclick="train('hp')" class="action-btn">Train Vitality (-8 STA)</button>
   </div>
 
   <!-- Actions -->
   <div class="section-title">Actions</div>
-  <div class="btnrow">
-    <button onclick="fightMonster()">Hunt Monster (-10 STA)</button>
-    <button onclick="rest()">Rest (-20 gold)</button>
-    <button onclick="resetGame()">Reset Character</button>
+  <div class="btnrow" id="action-btns">
+    <button onclick="fightMonster()" class="action-btn">Hunt Monster (-10 STA)</button>
+    <button onclick="rest()" class="action-btn">Rest (-20 gold)</button>
+    <button onclick="resetGame()" class="action-btn">Reset Character</button>
     <button onclick="logoutAccount()">Log out</button>
   </div>
 
@@ -167,7 +172,7 @@
   <!-- Boss Fight -->
   <div class="section-title">Boss Fight</div>
   <div class="btnrow">
-    <button onclick="fightBoss()">Challenge Today's Boss (-30 STA)</button>
+    <button onclick="fightBoss()" class="action-btn">Challenge Today's Boss (-30 STA)</button>
   </div>
 
   <!-- Shop -->
@@ -182,7 +187,7 @@
   <div class="section-title">PvP Arena</div>
   <div class="btnrow">
     <button onclick="refreshArena()">Refresh Opponents</button>
-    <button onclick="autoAttack()">Auto Attack (10 fights)</button>
+    <button onclick="autoAttack()" class="action-btn">Auto Attack (10 fights)</button>
   </div>
   <div id="arena-list" class="panel"></div>
 
@@ -204,7 +209,7 @@
   <div class="section-title">Daily Tournament</div>
   <div class="btnrow">
     <button onclick="refreshTournament()">Refresh Standings</button>
-    <button onclick="claimTournament()">Claim Champion Reward</button>
+    <button onclick="claimTournament()" class="action-btn">Claim Champion Reward</button>
   </div>
   <div id="tournament-list" class="panel"></div>
 
@@ -246,10 +251,18 @@ let currentUser = null;
 let pendingUsername = null;
 let walletPubkey = null;
 let arenaRecords = [];
-let lastPublishTime = 0; // throttle arena updates
-const PUBLISH_THROTTLE_MS = 30000; // 30 seconds
+let lastPublishTime = 0;
+const PUBLISH_THROTTLE_MS = 30000;
 
-// Equipment slots
+// Cooldown system
+let actionCooldownRemaining = 0;
+let cooldownInterval = null;
+
+// Background music
+let musicOsc = null;
+let musicGain = null;
+let musicPlaying = false;
+
 const EQUIP_SLOTS = ['weapon', 'armor', 'accessory'];
 
 // ========== SOUND ENGINE (Web Audio) ==========
@@ -278,6 +291,72 @@ function sfxVictory() { playTone(800, 'square', 0.2, 0.1); setTimeout(()=>playTo
 function sfxDefeat() { playTone(100, 'sawtooth', 0.3, 0.12); }
 function sfxLevelUp() { playTone(1000, 'triangle', 0.3, 0.15); playTone(1500, 'triangle', 0.3, 0.15); }
 function sfxAmbush() { playTone(80, 'sawtooth', 0.2, 0.15); }
+
+// ========== BACKGROUND MUSIC ==========
+function startBackgroundMusic() {
+  if (musicPlaying) return;
+  initAudio();
+  musicOsc = audioCtx.createOscillator();
+  musicGain = audioCtx.createGain();
+  musicOsc.type = 'sine';
+  musicOsc.frequency.value = 60; // low hum
+  musicGain.gain.value = 0.1; // 10% volume
+  musicOsc.connect(musicGain).connect(audioCtx.destination);
+  musicOsc.loop = true;
+  musicOsc.start();
+  musicPlaying = true;
+}
+function stopBackgroundMusic() {
+  if (musicOsc) {
+    musicOsc.stop();
+    musicOsc.disconnect();
+    musicOsc = null;
+    musicGain = null;
+    musicPlaying = false;
+  }
+}
+function toggleMusic() {
+  if (musicPlaying) {
+    stopBackgroundMusic();
+    document.getElementById('musicBtn').textContent = 'Play Music';
+  } else {
+    startBackgroundMusic();
+    document.getElementById('musicBtn').textContent = 'Mute Music';
+  }
+}
+
+// ========== COOLDOWN ==========
+function startCooldown(seconds) {
+  actionCooldownRemaining = seconds;
+  updateCooldownDisplay();
+  setActionButtonsDisabled(true);
+  if (cooldownInterval) clearInterval(cooldownInterval);
+  cooldownInterval = setInterval(() => {
+    actionCooldownRemaining--;
+    updateCooldownDisplay();
+    if (actionCooldownRemaining <= 0) {
+      clearInterval(cooldownInterval);
+      cooldownInterval = null;
+      setActionButtonsDisabled(false);
+      document.getElementById('cooldown-display').textContent = '';
+    }
+  }, 1000);
+}
+function updateCooldownDisplay() {
+  const display = document.getElementById('cooldown-display');
+  if (actionCooldownRemaining > 0) {
+    const mins = Math.floor(actionCooldownRemaining / 60);
+    const secs = actionCooldownRemaining % 60;
+    display.textContent = `Cooldown: ${mins}m ${secs.toString().padStart(2,'0')}s`;
+  } else {
+    display.textContent = '';
+  }
+}
+function setActionButtonsDisabled(disabled) {
+  document.querySelectorAll('.action-btn').forEach(btn => {
+    btn.disabled = disabled;
+  });
+}
 
 // ========== AUTH ==========
 function registerAccount() {
@@ -310,6 +389,7 @@ auth.onAuthStateChanged(async user => {
     if (hadSave) {
       render();
       tryAutoConnect();
+      startBackgroundMusic(); // start music on login
     } else {
       document.getElementById('hero-select').style.display = 'block';
       renderHeroSelect();
@@ -358,6 +438,7 @@ function selectHero(id) {
   print(`You begin your journey as a ${h.name}.`);
   render();
   tryAutoConnect();
+  startBackgroundMusic(); // music on hero select
 }
 
 // ========== HELPERS ==========
@@ -417,7 +498,6 @@ function render() {
   renderShop();
   renderInventory();
   renderQuest();
-  // Throttle arena publish
   const now = Date.now();
   if (now - lastPublishTime > PUBLISH_THROTTLE_MS) {
     publishToArena();
@@ -523,50 +603,53 @@ async function redeemGold() {
   render();
 }
 
-// ========== TRAINING & REST ==========
+// ========== TRAINING & REST (with cooldown) ==========
 function train(type) {
+  if (actionCooldownRemaining > 0) { print("Cooldown active. Wait."); return; }
   initAudio();
   const cost = type==='hp'?8:5;
   if (!useStamina(cost)) return;
   if (type==='str') { state.str+=1; print(`Strength +1 → ${state.str}.`); sfxTrain(); }
   else if (type==='def') { state.def+=1; print(`Defense +1 → ${state.def}.`); sfxTrain(); }
   else if (type==='hp') { state.maxhp+=3; state.hp=Math.min(state.hp+3, state.maxhp+getEquippedStats().maxhp); print(`Max HP +3.`); sfxTrain(); }
+  startCooldown(60);
   render();
 }
 function rest() {
+  if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
   if (state.gold < 20) { print(`Need 20 gold.`); return; }
   state.gold -= 20;
   state.stamina = Math.min(state.maxStamina, state.stamina + 15);
   state.hp = Math.min(state.maxhp + getEquippedStats().maxhp, state.hp + 5);
   print(`You rest.`); sfxRest();
+  startCooldown(60);
   render();
 }
 
 // ========== LOOT SYSTEM ==========
 function rollLoot() {
   const roll = Math.random();
-  if (roll < 0.03) { // Mystic Scroll
+  if (roll < 0.03) {
     const stat = ['str','def','maxhp'][Math.floor(Math.random()*3)];
     if (stat==='str') { state.str += 1; print(`Loot: Mystic Scroll! +1 STR.`); }
     else if (stat==='def') { state.def += 1; print(`Loot: Mystic Scroll! +1 DEF.`); }
     else { state.maxhp += 3; print(`Loot: Mystic Scroll! +3 Max HP.`); }
-  } else if (roll < 0.08) { // Enchanted Gem
+  } else if (roll < 0.08) {
     state.gold += 80;
     print(`Loot: Enchanted Gem! +80 gold.`);
-  } else if (roll < 0.12) { // Health Potion drop
+  } else if (roll < 0.12) {
     state.hp = Math.min(state.maxhp+getEquippedStats().maxhp, state.hp+15);
     print(`Loot: Health Potion. +15 HP.`);
-  } else if (roll < 0.16) { // Stamina Potion
+  } else if (roll < 0.16) {
     state.stamina = Math.min(state.maxStamina, state.stamina+20);
     print(`Loot: Stamina Potion. +20 STA.`);
-  } else if (roll < 0.19) { // Rare equipment fragment
+  } else if (roll < 0.19) {
     const frag = FEATURED_ITEMS[Math.floor(Math.random()*FEATURED_ITEMS.length)];
     if (!state.ownedItems.includes(frag.id)) {
       state.ownedItems.push(frag.id);
       print(`Loot: ${frag.name}! Check inventory.`);
     }
   }
-  // else no drop
 }
 
 // ========== SHOP & INVENTORY ==========
@@ -665,7 +748,6 @@ function buyItem(itemId) {
     print(`Used ${item.name}.`);
   } else {
     state.ownedItems.push(itemId);
-    // Auto-equip if slot empty
     if (item.slot && !state.equipped[item.slot]) {
       state.equipped[item.slot] = itemId;
     }
@@ -697,8 +779,9 @@ function claimQuest() {
   render();
 }
 
-// ========== FIGHT SYSTEM ==========
+// ========== FIGHT SYSTEM (with cooldown) ==========
 function fightMonster() {
+  if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
   if (!useStamina(10)) return;
   initAudio();
   const monsters = [
@@ -734,10 +817,12 @@ function fightMonster() {
     rollLoot();
     checkLevelUp();
   }
+  startCooldown(60);
   render();
 }
 
 function fightBoss() {
+  if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
   if (!state) return;
   const today = todayKey();
   if (state.lastBossDate===today) { print("Boss already defeated today."); return; }
@@ -769,6 +854,7 @@ function fightBoss() {
     rollLoot(); rollLoot();
     checkLevelUp();
   }
+  startCooldown(60);
   render();
 }
 
@@ -784,7 +870,7 @@ function checkLevelUp() {
   }
 }
 
-// ========== PVP & ARENA ==========
+// ========== PVP & ARENA (with cooldown on individual fights) ==========
 function generateBots(playerLevel) {
   const levels = [
     Math.max(1, playerLevel + Math.floor(Math.random()*3)-1),
@@ -796,7 +882,6 @@ function generateBots(playerLevel) {
     let str = 4 + lvl*2 + Math.floor(Math.random()*3);
     let def = 4 + lvl*2 + Math.floor(Math.random()*3);
     let maxhp = 25 + lvl*6;
-    // Scale bots for higher levels
     if (lvl >= 25) { str += 10; def += 10; maxhp += 40; }
     else if (lvl >= 15) { str += 5; def += 5; maxhp += 20; }
     return {
@@ -820,7 +905,7 @@ async function refreshArena() {
   listEl.innerHTML = arenaRecords.map((r,i)=>`
     <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #21262d;">
       <span>${r.heroDisplay} (Lvl ${r.level})</span>
-      <button onclick="fightPlayer(${i})">Challenge</button>
+      <button onclick="fightPlayer(${i})" class="action-btn">Challenge</button>
     </div>`).join('');
 }
 
@@ -841,6 +926,7 @@ async function publishToArena() {
 }
 
 function fightPlayer(index) {
+  if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
   const opp = arenaRecords[index];
   if (!opp || !state) return;
   if (state.stamina < 15 || state.gold < 10) { print("Need 15 STA and 10 gold."); return; }
@@ -870,7 +956,6 @@ function fightPlayer(index) {
     print(`Victory! +${goldWon}g, +${xpWon} XP.`); sfxVictory();
     rollLoot();
     logBattle(opp, 'win');
-    // Update tournament if real player
     if (opp.uid && !opp.isBot) {
       const today = todayKey();
       if (state.tournamentDate !== today) { state.tournamentDate = today; state.tournamentWins = 0; state.tournamentClaimed = false; }
@@ -879,6 +964,7 @@ function fightPlayer(index) {
     }
     checkLevelUp();
   }
+  startCooldown(60);
   render();
 }
 
@@ -914,7 +1000,6 @@ async function claimTournament() {
       if (data.claimed) throw new Error("Already claimed by someone else.");
       if (data.topUid !== currentUser.uid) throw new Error("You are not the champion.");
       t.update(leaderRef, { claimed: true });
-      // Award inside transaction success
       state.tournamentClaimed = true;
       const goldWon = 150;
       const xpWon = Math.round(60*(state.xpBonus||1));
@@ -946,8 +1031,10 @@ async function logBattle(opp, result, aiInitiated=false) {
 }
 
 async function autoAttack() {
+  if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
   if (arenaRecords.length===0) await refreshArena();
   print("--- Auto Attack (10 fights) ---");
+  setActionButtonsDisabled(true);
   for (let i=0; i<10; i++) {
     if (!state || state.stamina<15) break;
     const idx = Math.floor(Math.random()*arenaRecords.length);
@@ -955,6 +1042,7 @@ async function autoAttack() {
     await new Promise(r => setTimeout(r, 500));
   }
   print("Auto attack finished.");
+  startCooldown(60);
 }
 
 // ========== AMBUSH (AI) ==========
@@ -1057,7 +1145,6 @@ function resetGame() {
   renderHeroSelect();
 }
 
-// Auto-render on page load for any dynamic updates
 window.addEventListener('load', () => {
   initAudio();
   document.body.addEventListener('click', initAudio, {once:true});
