@@ -301,8 +301,7 @@
   <!-- PvP Arena -->
   <div class="section-title">PvP Arena</div>
   <div class="btnrow">
-    <button onclick="refreshArena()">Refresh Opponents</button>
-    <button onclick="autoAttack()" class="action-btn">Auto Attack (10 fights)</button>
+    <button onclick="autoAttack()" class="action-btn">Auto Attack</button>
   </div>
   <div id="arena-list" class="panel"></div>
 
@@ -654,6 +653,7 @@ auth.onAuthStateChanged(async user => {
       startTavernListener();
       updateEvent();
       renderGuild();
+      refreshArena();
     } else {
       document.getElementById('hero-select').style.display = 'block';
       renderHeroSelect();
@@ -709,6 +709,7 @@ function selectHero(id) {
   if (musicVolume > 0) startNatureAmbient();
   startTavernListener();
   updateEvent();
+  refreshArena();
 }
 
 // ========== HELPERS ==========
@@ -1608,47 +1609,51 @@ function checkLevelUp() {
 
 // ========== PVP & ARENA ==========
 function generateBots(playerLevel) {
-  const levels = [
-    Math.max(1, playerLevel + Math.floor(Math.random()*3)-1),
-    Math.max(1, playerLevel + Math.floor(Math.random()*3)-1),
-    playerLevel + 8 + Math.floor(Math.random()*5)
-  ];
-  return levels.map((lvl,i) => {
-    const hero = HEROES[Math.floor(Math.random()*HEROES.length)];
-    let str = 4 + lvl*2 + Math.floor(Math.random()*3);
-    let def = 4 + lvl*2 + Math.floor(Math.random()*3);
-    let maxhp = 25 + lvl*6;
-    if (lvl >= 25) { str += 10; def += 10; maxhp += 40; }
-    else if (lvl >= 15) { str += 5; def += 5; maxhp += 20; }
-    return {
-      id: 'bot_'+i+'_'+lvl,
-      heroDisplay: hero.name,
-      level: lvl, str, def, maxhp,
-      isBot: true
-    };
-  });
+  // Single competitive bot, closely matched to the player's level
+  // (instead of the old mix of easy/weak bots + one wildly overpowered bot)
+  const lvl = Math.max(1, playerLevel + Math.floor(Math.random() * 3) - 1); // playerLevel -1, 0, or +1
+  const hero = HEROES[Math.floor(Math.random() * HEROES.length)];
+  let str = 4 + lvl * 2 + Math.floor(Math.random() * 3);
+  let def = 4 + lvl * 2 + Math.floor(Math.random() * 3);
+  let maxhp = 25 + lvl * 6;
+  if (lvl >= 25) { str += 10; def += 10; maxhp += 40; }
+  else if (lvl >= 15) { str += 5; def += 5; maxhp += 20; }
+  return [{
+    id: 'bot_' + lvl + '_' + Date.now(),
+    heroDisplay: hero.name,
+    level: lvl, str, def, maxhp,
+    isBot: true
+  }];
 }
 
 async function refreshArena() {
   const listEl = document.getElementById('arena-list');
-  listEl.innerHTML = 'Loading...';
-  let records = [];
+  if (listEl) listEl.innerHTML = 'Loading...';
+  let humans = [];
   try {
     const snap = await db.collection('pvp_public').get();
     snap.forEach(doc => {
       const r = doc.data();
-      if (r.uid !== currentUser?.uid) records.push(r);
+      if (r.uid !== currentUser?.uid) humans.push(r);
     });
   } catch(e){}
-  const bots = generateBots(state?.level||1);
-  records = records.concat(bots);
-  records.sort((a,b) => b.level - a.level);
-  arenaRecords = records.slice(0,20);
-  listEl.innerHTML = arenaRecords.map((r,i) => `
-    <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #21262d;">
-      <span>${getOpponentDisplay(r)}</span>
-      <button onclick="fightPlayer(${i})" class="action-btn">Challenge</button>
-    </div>`).join('');
+  // Randomly pick up to 4 human players (online or offline — pvp_public
+  // just holds their last-published stats), then always add exactly 1
+  // competitive AI bot. Max pool size = 5.
+  for (let i = humans.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [humans[i], humans[j]] = [humans[j], humans[i]];
+  }
+  humans = humans.slice(0, 4);
+  const bot = generateBots(state?.level || 1);
+  arenaRecords = humans.concat(bot);
+  if (listEl) {
+    listEl.innerHTML = arenaRecords.map((r,i) => `
+      <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #21262d;">
+        <span>${getOpponentDisplay(r)}${r.isBot?'':''}</span>
+        <button onclick="fightPlayer(${i})" class="action-btn">Challenge</button>
+      </div>`).join('');
+  }
 }
 
 async function publishToArena() {
@@ -1715,6 +1720,8 @@ function fightPlayer(index) {
   }
   startCooldown(60);
   render();
+  // Swap in a fresh random pool (4 humans + 1 bot) only after this attack ends
+  refreshArena();
 }
 
 async function updateTournamentLeader(wins) {
@@ -1810,17 +1817,10 @@ async function logBattle(opp, result, aiInitiated=false) {
 
 async function autoAttack() {
   if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
-  if (arenaRecords.length===0) await refreshArena();
-  print("--- Auto Attack (10 fights) ---");
-  setActionButtonsDisabled(true);
-  for (let i=0; i<10; i++) {
-    if (!state || state.stamina<15) break;
-    const idx = Math.floor(Math.random()*arenaRecords.length);
-    fightPlayer(idx);
-    await new Promise(r => setTimeout(r, 500));
-  }
-  print("Auto attack finished.");
-  startCooldown(60);
+  if (arenaRecords.length === 0) await refreshArena();
+  if (arenaRecords.length === 0) { print("No opponents found."); return; }
+  const idx = Math.floor(Math.random() * arenaRecords.length);
+  fightPlayer(idx);
 }
 
 // ========== AMBUSH ==========
