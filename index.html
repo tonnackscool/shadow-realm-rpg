@@ -1731,6 +1731,40 @@ async function updateTournamentLeader(wins) {
   } catch(e){}
 }
 
+async function refreshTournament() {
+  const list = document.getElementById('tournament-list');
+  if (!list || !currentUser || !state) return;
+  list.innerHTML = 'Loading...';
+  const today = todayKey();
+  try {
+    const leaderDoc = await db.collection('tournamentLeader').doc(today).get();
+    const yourWins = (state.tournamentDate === today) ? (state.tournamentWins || 0) : 0;
+    let leaderHtml;
+    if (!leaderDoc.exists) {
+      leaderHtml = `<div style="color:#7d8590;">No champion yet today. Win PvP duels vs real players to take the lead!</div>`;
+    } else {
+      const data = leaderDoc.data();
+      const isYou = data.topUid === currentUser.uid;
+      let leaderName = isYou ? (state.username || state.name) : 'another adventurer';
+      if (!isYou) {
+        try {
+          const leaderProfile = await db.collection('pvp_public').doc(data.topUid).get();
+          if (leaderProfile.exists) leaderName = leaderProfile.data().username || leaderProfile.data().heroDisplay || leaderName;
+        } catch(e) {}
+      }
+      leaderHtml = `
+        <div>👑 Current Champion: <b style="color:#e3b341;">${esc(leaderName)}${isYou?' (you)':''}</b> — ${data.topWins} win${data.topWins===1?'':'s'}</div>
+        <div style="color:#7d8590;">${data.claimed ? 'Reward already claimed today.' : 'Reward not yet claimed.'}</div>`;
+    }
+    list.innerHTML = leaderHtml + `
+      <div style="margin-top:8px; border-top:1px solid #21262d; padding-top:8px;">
+        Your wins today (vs real players): <b>${yourWins}</b>
+      </div>`;
+  } catch(e) {
+    list.innerHTML = 'Error loading standings.';
+  }
+}
+
 async function claimTournament() {
   if (!state || !currentUser) return;
   const today = todayKey();
