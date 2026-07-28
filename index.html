@@ -1859,8 +1859,9 @@ async function refreshBattleLog() {
     list.innerHTML = battles.slice(0,15).map(b=>{
       const youWon = (b.attackerUid===currentUser.uid && b.result==='win') || (b.defenderUid===currentUser.uid && b.result==='loss');
       const opp = b.aiInitiated ? b.attackerName : b.defenderName;
-      return `<div style="display:flex;justify-content:space-between;">
-        <span>${b.aiInitiated?`${esc(opp)} ambushed you`:`You vs ${esc(opp)}`}</span>
+      const when = b.timestamp ? new Date(b.timestamp).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #21262d;">
+        <span>${b.aiInitiated?`${esc(opp)} ambushed you`:`You vs ${esc(opp)}`}<br><span style="color:#7d8590;font-size:11px;">${esc(when)}</span></span>
         <b style="color:${youWon?'#3fb950':'#f85149'};">${youWon?'WIN':'LOSS'}</b>
       </div>`;
     }).join('') || 'No battles yet.';
