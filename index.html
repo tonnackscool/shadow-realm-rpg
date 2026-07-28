@@ -286,6 +286,25 @@
   <div class="section-title">Crafting</div>
   <div id="crafting-box" class="panel"></div>
 
+  <!-- Player Market -->
+  <div class="section-title">💰 Player Market</div>
+  <div class="panel">
+    <div class="setting-row">
+      <label>Sell an item:</label>
+      <select id="market-sell-select" style="flex:1;background:#0b0d10;border:1px solid #30363d;color:#c9d1d9;padding:6px;"></select>
+    </div>
+    <div class="setting-row">
+      <label>Price (gold):</label>
+      <input id="market-sell-price" type="number" min="1" max="21000000000" placeholder="e.g. 500" style="width:150px;background:#0b0d10;border:1px solid #30363d;color:#c9d1d9;padding:4px;">
+      <button onclick="sellItem()">List for Sale</button>
+    </div>
+    <div class="btnrow">
+      <button onclick="refreshMarket()">Refresh Listings</button>
+      <button onclick="claimMarketEarnings()" id="claimEarningsBtn">Collect Earnings</button>
+    </div>
+    <div id="market-list"></div>
+  </div>
+
   <!-- Equipment / Inventory -->
   <div class="section-title">Equipment & Inventory</div>
   <div id="inventory-box" class="panel"></div>
@@ -400,6 +419,20 @@ let sfxVolume = 0.1;
 let ambushesEnabled = true;
 
 const EQUIP_SLOTS = ['weapon', 'armor', 'accessory'];
+
+// ---------- Gold cap / money management ----------
+const MAX_GOLD = 21000000000; // 21 billion gold hard cap per player
+function addGold(amount) {
+  if (!state) return;
+  const before = state.gold || 0;
+  state.gold = Math.max(0, Math.min(MAX_GOLD, before + amount));
+  if (amount > 0 && state.gold === MAX_GOLD && before < MAX_GOLD) {
+    print(`Gold capped at ${MAX_GOLD.toLocaleString()} — you've hit the max!`);
+  }
+}
+function fmtGold(n) {
+  return (n || 0).toLocaleString();
+}
 
 // Achievements definitions
 const ACHIEVEMENTS = [
@@ -654,6 +687,7 @@ auth.onAuthStateChanged(async user => {
       updateEvent();
       renderGuild();
       refreshArena();
+      refreshMarket();
     } else {
       document.getElementById('hero-select').style.display = 'block';
       renderHeroSelect();
@@ -710,6 +744,7 @@ function selectHero(id) {
   startTavernListener();
   updateEvent();
   refreshArena();
+  refreshMarket();
 }
 
 // ========== HELPERS ==========
@@ -761,7 +796,7 @@ function render() {
   const totalDef = state.def + eq.def;
   const totalMaxHp = state.maxhp + eq.maxhp;
   document.getElementById('rank').textContent =
-    `${state.avatar||'⚔️'} ${state.username} the ${state.name} | Lvl ${state.level} | Kills: ${state.kills} | Gold: ${state.gold}`;
+    `${state.avatar||'⚔️'} ${state.username} the ${state.name} | Lvl ${state.level} | Kills: ${state.kills} | Gold: ${fmtGold(state.gold)}`;
   document.getElementById('stats').innerHTML = `
     <div class="stat"><b>STR:</b> ${totalStr} (base ${state.str} + ${eq.str})</div>
     <div class="stat"><b>DEF:</b> ${totalDef} (base ${state.def} + ${eq.def})</div>
@@ -775,6 +810,7 @@ function render() {
   renderShop();
   renderCrafting();
   renderInventory();
+  populateMarketSellSelect();
   renderAchievements();
   renderQuest();
   renderDungeon();
@@ -898,7 +934,7 @@ async function redeemGold() {
   const TRI_RATE = 100;
   if (state.gold < TRI_RATE) { print(`Need ${TRI_RATE} gold.`); return; }
   const amount = Math.floor(state.gold / TRI_RATE);
-  state.gold -= amount * TRI_RATE;
+  addGold(-(amount * TRI_RATE));
   try {
     await db.collection('tri_redemptions').add({
       uid: currentUser.uid, wallet: walletPubkey,
@@ -907,7 +943,7 @@ async function redeemGold() {
     });
     print(`Redeemed ${amount*TRI_RATE} gold for ${amount} TRI.`);
   } catch(e) {
-    state.gold += amount*TRI_RATE;
+    addGold(amount*TRI_RATE);
     print("Redemption failed.");
   }
   render();
@@ -928,7 +964,7 @@ function train(type) {
 function rest() {
   if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
   if (state.gold < 20) { print(`Need 20 gold.`); return; }
-  state.gold -= 20;
+  addGold(-(20));
   state.stamina = Math.min(state.maxStamina, state.stamina + 15);
   state.hp = Math.min(state.maxhp + getEquippedStats().maxhp, state.hp + 5);
   print(`You rest.`); sfxRest();
@@ -945,7 +981,7 @@ function rollLoot() {
     else if (stat==='def') { state.def += 1; print(`Loot: Mystic Scroll! +1 DEF.`); }
     else { state.maxhp += 3; print(`Loot: Mystic Scroll! +3 Max HP.`); }
   } else if (roll < 0.08) {
-    state.gold += 80;
+    addGold(80);
     print(`Loot: Enchanted Gem! +80 gold.`);
   } else if (roll < 0.12) {
     state.hp = Math.min(state.maxhp+getEquippedStats().maxhp, state.hp+15);
@@ -1074,7 +1110,7 @@ function buyItem(itemId) {
     print("Already owned."); return;
   }
   if (state.gold < item.price) { print("Not enough gold."); return; }
-  state.gold -= item.price;
+  addGold(-(item.price));
   if (item.type==='consumable') {
     if (item.id==='potion_hp') state.hp = Math.min(state.maxhp+getEquippedStats().maxhp, state.hp+25);
     else if (item.id==='potion_sta') state.stamina = Math.min(state.maxStamina, state.stamina+30);
@@ -1132,6 +1168,159 @@ function craftItem(recipeIndex) {
   render();
 }
 
+// ========== PLAYER MARKET ==========
+// Design note: gold is never transferred directly between players' `saves`
+// documents (that would need a cross-user write, which client-side security
+// rules can't safely validate). Instead, buying a listing deletes it and
+// creates a "market_payouts" record; the seller collects it into their own
+// gold next time they click "Collect Earnings". This keeps every gold
+// mutation same-user, so the existing per-user Firestore rules still apply.
+
+function getSellableItems() {
+  if (!state) return [];
+  return state.ownedItems
+    .map(id => findShopItem(id))
+    .filter(item => item && item.slot) // only equipment can be listed
+    .filter(item => !Object.values(state.equipped).includes(item.id)); // must be unequipped first
+}
+
+function populateMarketSellSelect() {
+  const sel = document.getElementById('market-sell-select');
+  if (!sel) return;
+  const items = getSellableItems();
+  if (items.length === 0) {
+    sel.innerHTML = '<option value="">No sellable items (unequip something first)</option>';
+    return;
+  }
+  sel.innerHTML = items.map(item => `<option value="${item.id}">${item.name} — ${item.desc}</option>`).join('');
+}
+
+async function sellItem() {
+  if (!state || !currentUser) return;
+  const sel = document.getElementById('market-sell-select');
+  const priceInput = document.getElementById('market-sell-price');
+  const itemId = sel.value;
+  const price = Math.floor(Number(priceInput.value));
+  if (!itemId) { print('Nothing to sell.'); return; }
+  if (!price || price <= 0) { print('Enter a valid price.'); return; }
+  if (price > MAX_GOLD) { print(`Price cannot exceed ${fmtGold(MAX_GOLD)} gold.`); return; }
+  const item = findShopItem(itemId);
+  if (!item) return;
+  if (!state.ownedItems.includes(itemId) || Object.values(state.equipped).includes(itemId)) {
+    print('You must own and unequip this item first.'); return;
+  }
+  // Escrow: remove from inventory immediately so it can't be equipped/sold twice
+  state.ownedItems = state.ownedItems.filter(id => id !== itemId);
+  try {
+    await db.collection('market_listings').add({
+      sellerUid: currentUser.uid,
+      sellerName: state.username,
+      itemId: item.id,
+      itemName: item.name,
+      itemDesc: item.desc,
+      price: price,
+      timestamp: new Date().toISOString()
+    });
+    print(`Listed ${item.name} for ${fmtGold(price)} gold.`);
+  } catch(e) {
+    // Roll back escrow if the listing failed to save
+    state.ownedItems.push(itemId);
+    print('Failed to list item.');
+  }
+  priceInput.value = '';
+  render();
+  refreshMarket();
+}
+
+async function cancelListing(listingId) {
+  if (!state || !currentUser) return;
+  try {
+    const doc = await db.collection('market_listings').doc(listingId).get();
+    if (!doc.exists) { print('Listing already gone.'); refreshMarket(); return; }
+    const data = doc.data();
+    if (data.sellerUid !== currentUser.uid) { print('Not your listing.'); return; }
+    await db.collection('market_listings').doc(listingId).delete();
+    state.ownedItems.push(data.itemId);
+    print(`Cancelled listing for ${data.itemName}. Item returned to inventory.`);
+    render();
+    refreshMarket();
+  } catch(e) { print('Failed to cancel listing.'); }
+}
+
+async function buyListing(listingId) {
+  if (!state || !currentUser) return;
+  try {
+    const listingRef = db.collection('market_listings').doc(listingId);
+    let bought = null;
+    await db.runTransaction(async t => {
+      const doc = await t.get(listingRef);
+      if (!doc.exists) throw new Error('That listing is no longer available.');
+      const data = doc.data();
+      if (data.sellerUid === currentUser.uid) throw new Error("You can't buy your own listing.");
+      if (state.gold < data.price) throw new Error('Not enough gold.');
+      t.delete(listingRef);
+      const payoutRef = db.collection('market_payouts').doc();
+      t.set(payoutRef, {
+        sellerUid: data.sellerUid,
+        amount: data.price,
+        itemName: data.itemName,
+        buyerName: state.username,
+        timestamp: new Date().toISOString(),
+        claimed: false
+      });
+      bought = data;
+    });
+    if (bought) {
+      addGold(-(bought.price));
+      state.ownedItems.push(bought.itemId);
+      print(`Bought ${bought.itemName} for ${fmtGold(bought.price)} gold from ${bought.sellerName}.`);
+      render();
+      refreshMarket();
+    }
+  } catch(e) { print(e.message || 'Purchase failed.'); }
+}
+
+async function claimMarketEarnings() {
+  if (!state || !currentUser) return;
+  try {
+    const snap = await db.collection('market_payouts')
+      .where('sellerUid', '==', currentUser.uid)
+      .where('claimed', '==', false)
+      .get();
+    if (snap.empty) { print('No market earnings to collect.'); return; }
+    let total = 0;
+    const batch = db.batch();
+    snap.forEach(doc => {
+      total += doc.data().amount;
+      batch.update(doc.ref, { claimed: true });
+    });
+    await batch.commit();
+    addGold(total);
+    print(`Collected ${fmtGold(total)} gold from ${snap.size} market sale(s)!`);
+    render();
+  } catch(e) { print('Failed to collect earnings.'); }
+}
+
+async function refreshMarket() {
+  populateMarketSellSelect();
+  const list = document.getElementById('market-list');
+  if (!list) return;
+  list.innerHTML = 'Loading...';
+  try {
+    const snap = await db.collection('market_listings').orderBy('timestamp', 'desc').limit(30).get();
+    const listings = [];
+    snap.forEach(doc => listings.push({ id: doc.id, ...doc.data() }));
+    if (listings.length === 0) { list.innerHTML = '<div style="color:#7d8590;">No listings yet.</div>'; return; }
+    list.innerHTML = listings.map(l => {
+      const isMine = l.sellerUid === currentUser?.uid;
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #21262d;">
+        <span><b>${esc(l.itemName)}</b> ${esc(l.itemDesc||'')} — ${fmtGold(l.price)}g <span style="color:#7d8590;">by ${isMine?'you':esc(l.sellerName)}</span></span>
+        <button onclick="${isMine ? `cancelListing('${l.id}')` : `buyListing('${l.id}')`}">${isMine?'Cancel':'Buy'}</button>
+      </div>`;
+    }).join('');
+  } catch(e) { list.innerHTML = 'Error loading market.'; }
+}
+
 // ========== ACHIEVEMENTS ==========
 function renderAchievements() {
   const box = document.getElementById('achievements-box');
@@ -1151,7 +1340,7 @@ function checkAchievements() {
     if (!state.achievements.includes(a.id) && a.check(state)) {
       state.achievements.push(a.id);
       if (a.reward) {
-        state.gold += a.reward.gold;
+        addGold(a.reward.gold);
         state.xp += Math.round(a.reward.xp * (state.xpBonus || 1));
         print(`🏆 Achievement unlocked: ${a.name}! +${a.reward.gold} gold, +${a.reward.xp} XP.`);
       }
@@ -1174,7 +1363,7 @@ function renderQuest() {
 function claimQuest() {
   if (!state || state.questProgress<3 || state.questClaimed) return;
   state.questClaimed = true;
-  state.gold += 50;
+  addGold(50);
   state.xp += Math.round(20*(state.xpBonus||1));
   print("Quest complete! +50 gold, +20 XP.");
   checkLevelUp();
@@ -1225,7 +1414,7 @@ function fightMonster() {
     state.kills++;
     const xpGain = Math.round(m.xp * getXpMultiplier());
     state.xp += xpGain;
-    state.gold += m.gold;
+    addGold(m.gold);
     if (state.questDate===todayKey()) state.questProgress++;
     print(`Victory! +${xpGain} XP, +${m.gold} gold.`); sfxVictory();
     rollLoot();
@@ -1295,13 +1484,13 @@ function fightDungeonWave() {
   if (myHp<=0) {
     state.hp = 1;
     const goldConsolation = 5 + wave * 2;
-    state.gold += goldConsolation;
+    addGold(goldConsolation);
     state.dungeonProgress = 0; // failed
     print(`You were defeated in the dungeon. Received ${goldConsolation} gold.`);
     sfxDefeat();
   } else {
     state.hp = myHp;
-    state.gold += monster.gold;
+    addGold(monster.gold);
     state.xp += Math.round(monster.xp * getXpMultiplier());
     state.kills++;
     print(`Wave ${wave} cleared! +${monster.gold} gold, +${monster.xp} XP.`);
@@ -1345,12 +1534,12 @@ function fightDungeonBoss() {
   if (myHp<=0) {
     state.hp = 1;
     const goldConsolation = 20;
-    state.gold += goldConsolation;
+    addGold(goldConsolation);
     print(`Defeated by the boss. Received ${goldConsolation} gold.`);
     sfxDefeat();
   } else {
     state.hp = myHp;
-    state.gold += boss.gold;
+    addGold(boss.gold);
     state.xp += Math.round(boss.xp * getXpMultiplier());
     state.kills++;
     print(`Dungeon complete! Defeated ${boss.name}! +${boss.gold} gold, +${boss.xp} XP.`);
@@ -1414,7 +1603,7 @@ async function createGuild() {
   // Check unique name
   const existing = await db.collection('guilds').where('name','==',name).get();
   if (!existing.empty) { print('Guild name already exists.'); return; }
-  state.gold -= 500;
+  addGold(-(500));
   const guildRef = db.collection('guilds').doc();
   await guildRef.set({
     name,
@@ -1440,7 +1629,7 @@ async function showGuildList() {
   const choice = prompt('Choose guild to join (type name):\n' + list);
   const guild = guilds.find(g => g.name === choice);
   if (!guild) return;
-  state.gold -= 100;
+  addGold(-(100));
   // Join guild
   await db.collection('guilds').doc(guild.id).update({
     members: firebase.firestore.FieldValue.arrayUnion({
@@ -1454,7 +1643,7 @@ async function showGuildList() {
 
 async function contributeToGuild() {
   if (state.gold < 50) { print('Need 50 gold.'); return; }
-  state.gold -= 50;
+  addGold(-(50));
   await db.collection('guilds').doc(state.guildId).update({
     treasury: firebase.firestore.FieldValue.increment(50)
   });
@@ -1485,7 +1674,7 @@ async function claimGuildQuest() {
     return;
   }
   await guildRef.update({ weeklyQuestClaimed: true });
-  state.gold += 100;
+  addGold(100);
   state.xp += Math.round(30 * (state.xpBonus||1));
   print(`Guild quest completed! +100 gold, +30 XP.`);
   checkLevelUp();
@@ -1585,7 +1774,7 @@ function fightBoss() {
   } else {
     const goldWon = 80+state.level*10;
     const xpWon = Math.round((40+state.level*5) * getXpMultiplier());
-    state.gold += goldWon; state.xp += xpWon; state.kills++;
+    addGold(goldWon); state.xp += xpWon; state.kills++;
     print(`Boss down! +${goldWon}g, +${xpWon} XP.`); sfxVictory();
     rollLoot(); rollLoot();
     if (currentEvent?.type === 'lucky_loot') rollLoot();
@@ -1682,7 +1871,7 @@ function fightPlayer(index) {
   const opp = arenaRecords[index];
   if (!opp || !state) return;
   if (state.stamina < 15 || state.gold < 10) { print("Need 15 STA and 10 gold."); return; }
-  state.stamina -= 15; state.gold -= 10;
+  state.stamina -= 15; addGold(-(10));
   initAudio();
   const oppName = getOpponentDisplay(opp);
   print(`Duel vs ${opp.heroDisplay || opp.username || opp.name || 'Unknown'}!`);
@@ -1697,7 +1886,7 @@ function fightPlayer(index) {
   }
   if (myHp<=0) {
     state.hp = Math.max(1, Math.floor((state.maxhp+eq.maxhp)*0.2));
-    state.gold -= Math.min(state.gold, 10+Math.floor(Math.random()*15));
+    addGold(-(Math.min(state.gold, 10+Math.floor(Math.random()*15))));
     state.xp -= Math.min(state.xp, Math.floor(state.xp*0.15));
     print(`Defeated.`); sfxDefeat();
     logBattle(opp, 'loss');
@@ -1705,7 +1894,7 @@ function fightPlayer(index) {
     state.hp = myHp;
     const goldWon = 15 + opp.level*3;
     const xpWon = Math.round((10+opp.level*2) * getXpMultiplier());
-    state.gold += goldWon; state.xp += xpWon; state.kills++;
+    addGold(goldWon); state.xp += xpWon; state.kills++;
     print(`Victory! +${goldWon}g, +${xpWon} XP.`); sfxVictory();
     rollLoot();
     if (currentEvent?.type === 'lucky_loot') rollLoot();
@@ -1787,7 +1976,7 @@ async function claimTournament() {
       if (data.topUid !== currentUser.uid) throw new Error("You are not the champion.");
       t.update(leaderRef, { claimed: true });
       state.tournamentClaimed = true;
-      state.gold += 150;
+      addGold(150);
       state.xp += Math.round(60 * getXpMultiplier());
       print(`*** Tournament Champion! +150g, +60 XP. ***`);
       sfxLevelUp();
@@ -1845,14 +2034,14 @@ function aiAmbush() {
   }
   if (myHp<=0) {
     state.hp = Math.max(1, Math.floor((state.maxhp+eq.maxhp)*0.25));
-    state.gold -= Math.min(state.gold, 5+Math.floor(Math.random()*15));
+    addGold(-(Math.min(state.gold, 5+Math.floor(Math.random()*15))));
     print("You were overwhelmed."); sfxDefeat();
     logBattle(bot, 'win', true);
   } else {
     state.hp = myHp;
     const goldWon = 10+lvl*2;
     const xpWon = Math.round((8+lvl) * getXpMultiplier());
-    state.gold += goldWon; state.xp += xpWon;
+    addGold(goldWon); state.xp += xpWon;
     print(`Ambush repelled! +${goldWon}g, +${xpWon} XP.`); sfxVictory();
     logBattle(bot, 'loss', true);
     checkLevelUp();
