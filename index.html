@@ -1112,13 +1112,39 @@ function renderInventory() {
   box.innerHTML = items.map(item => {
     const slot = item.slot || 'consumable';
     const equipped = Object.entries(state.equipped).find(([s,id])=>id===item.id);
+    const buyback = getBuybackPrice(item);
     return `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #21262d;">
       <span><b>${item.name}</b> (${slot}) ${equipped ? '[Equipped]' : ''}</span>
       <div>
         ${item.slot ? `<button onclick="equipItem('${item.id}')">${equipped?'Unequip':'Equip'}</button>` : ''}
+        ${item.slot ? `<button onclick="sellToShop('${item.id}')" title="Sell back to shop">Sell (${fmtGold(buyback)}g)</button>` : ''}
       </div>
     </div>`;
   }).join('');
+}
+
+// Shop buyback: sell an owned equipment item back to the NPC shop for a
+// reduced price. Unlike a pure purchase (which burns gold out of the
+// economy entirely), this puts some gold back into circulation — same as
+// a pawn shop, not full value, but not a total loss either.
+const BUYBACK_RATE = 0.5; // 50% of original list price
+function getBuybackPrice(item) {
+  return Math.max(1, Math.floor((item.price || 0) * BUYBACK_RATE));
+}
+function sellToShop(itemId) {
+  if (!state) return;
+  const item = findShopItem(itemId);
+  if (!item || !item.slot) { print("That item can't be sold."); return; }
+  if (!state.ownedItems.includes(itemId)) { print("You don't own that item."); return; }
+  // Unequip first if it's currently worn
+  for (const slot of EQUIP_SLOTS) {
+    if (state.equipped[slot] === itemId) state.equipped[slot] = null;
+  }
+  state.ownedItems = state.ownedItems.filter(id => id !== itemId);
+  const buyback = getBuybackPrice(item);
+  mintGold(buyback);
+  print(`Sold ${item.name} back to the shop for ${fmtGold(buyback)} gold.`);
+  render();
 }
 
 function equipItem(itemId) {
