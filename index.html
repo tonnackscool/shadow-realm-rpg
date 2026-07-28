@@ -305,6 +305,15 @@
     <div id="market-list"></div>
   </div>
 
+  <!-- Gold Economy / Total Supply -->
+  <div class="section-title">🪙 Gold Economy</div>
+  <div class="panel">
+    <div id="supply-info" style="color:#7d8590;">Loading supply data...</div>
+    <div class="btnrow" style="margin-top:8px;">
+      <button onclick="refreshGoldSupply()">Refresh Supply Info</button>
+    </div>
+  </div>
+
   <!-- Equipment / Inventory -->
   <div class="section-title">Equipment & Inventory</div>
   <div id="inventory-box" class="panel"></div>
@@ -688,6 +697,7 @@ auth.onAuthStateChanged(async user => {
       renderGuild();
       refreshArena();
       refreshMarket();
+      refreshGoldSupply();
     } else {
       document.getElementById('hero-select').style.display = 'block';
       renderHeroSelect();
@@ -745,6 +755,7 @@ function selectHero(id) {
   updateEvent();
   refreshArena();
   refreshMarket();
+  refreshGoldSupply();
 }
 
 // ========== HELPERS ==========
@@ -1319,6 +1330,46 @@ async function refreshMarket() {
       </div>`;
     }).join('');
   } catch(e) { list.innerHTML = 'Error loading market.'; }
+}
+
+async function refreshGoldSupply() {
+  const box = document.getElementById('supply-info');
+  if (!box || !state) return;
+  box.innerHTML = 'Loading supply data...';
+  try {
+    const snap = await db.collection('pvp_public').get();
+    let total = 0;
+    let players = 0;
+    let richest = { name: '—', gold: 0 };
+    snap.forEach(doc => {
+      const d = doc.data();
+      const g = d.gold || 0;
+      total += g;
+      players++;
+      if (g > richest.gold) richest = { name: d.username || d.heroDisplay || 'Unknown', gold: g };
+    });
+    // Include the current player in case their own pvp_public doc hasn't
+    // been (re)published yet this session.
+    if (!snap.docs.some(d => d.id === currentUser?.uid)) {
+      total += state.gold || 0;
+      players++;
+      if ((state.gold || 0) > richest.gold) richest = { name: state.username, gold: state.gold };
+    }
+    const maxPossibleSupply = players * MAX_GOLD;
+    const pctOfMax = maxPossibleSupply > 0 ? ((total / maxPossibleSupply) * 100).toFixed(4) : '0';
+    const yourShare = total > 0 ? (((state.gold||0) / total) * 100).toFixed(2) : '0';
+    const avg = players > 0 ? Math.round(total / players) : 0;
+    box.innerHTML = `
+      <div><b>Circulating Supply:</b> ${fmtGold(total)} gold <span style="color:#7d8590;">(${players} player${players===1?'':'s'} tracked)</span></div>
+      <div><b>Per-Player Cap:</b> ${fmtGold(MAX_GOLD)} gold</div>
+      <div><b>Theoretical Max Supply:</b> ${fmtGold(maxPossibleSupply)} gold <span style="color:#7d8590;">(cap × tracked players)</span></div>
+      <div><b>% of Theoretical Max in Circulation:</b> ${pctOfMax}%</div>
+      <div><b>Average Holdings:</b> ${fmtGold(avg)} gold/player</div>
+      <div><b>Richest Known Holder:</b> ${esc(richest.name)} — ${fmtGold(richest.gold)} gold</div>
+      <div style="margin-top:6px; border-top:1px solid #21262d; padding-top:6px;">
+        <b>Your Holdings:</b> ${fmtGold(state.gold)} gold (${yourShare}% of circulating supply)
+      </div>`;
+  } catch(e) { box.innerHTML = 'Error loading supply data.'; }
 }
 
 // ========== ACHIEVEMENTS ==========
