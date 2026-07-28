@@ -443,6 +443,28 @@ function fmtGold(n) {
   return (n || 0).toLocaleString();
 }
 
+// ---------- Global gold supply (game-wide, like a crypto max supply) ----------
+// One shared counter across ALL players — once 21,000,000,000 total gold has
+// ever been minted into the game (via kills, quests, loot, etc.), no more
+// new gold can be created by anyone. This is NOT per-player; it's a single
+// fixed ceiling for the whole game's economy. Spending, trading on the
+// market, and losing gold in PvP don't affect this counter — it only tracks
+// gold that has ever been newly created.
+async function mintGold(amount) {
+  if (!state || amount <= 0) return;
+  addGold(amount); // optimistic local grant for responsive gameplay
+  if (!currentUser) return;
+  try {
+    const ref = db.collection('gameStats').doc('goldSupply');
+    await db.runTransaction(async t => {
+      const doc = await t.get(ref);
+      const current = doc.exists ? (doc.data().totalMinted || 0) : 0;
+      const newTotal = Math.min(MAX_GOLD, current + amount);
+      t.set(ref, { totalMinted: newTotal }, { merge: true });
+    });
+  } catch(e) { /* best-effort global sync; local grant already happened */ }
+}
+
 // Achievements definitions
 const ACHIEVEMENTS = [
   { id:'kills10', name:'Hunter', desc:'Kill 10 enemies', check: s => s.kills >= 10, reward: {gold:50, xp:20} },
@@ -992,7 +1014,7 @@ function rollLoot() {
     else if (stat==='def') { state.def += 1; print(`Loot: Mystic Scroll! +1 DEF.`); }
     else { state.maxhp += 3; print(`Loot: Mystic Scroll! +3 Max HP.`); }
   } else if (roll < 0.08) {
-    addGold(80);
+    mintGold(80);
     print(`Loot: Enchanted Gem! +80 gold.`);
   } else if (roll < 0.12) {
     state.hp = Math.min(state.maxhp+getEquippedStats().maxhp, state.hp+15);
@@ -1337,37 +1359,40 @@ async function refreshGoldSupply() {
   if (!box || !state) return;
   box.innerHTML = 'Loading supply data...';
   try {
+    const supplyDoc = await db.collection('gameStats').doc('goldSupply').get();
+    const totalMinted = supplyDoc.exists ? (supplyDoc.data().totalMinted || 0) : 0;
+    const pctMinted = ((totalMinted / MAX_GOLD) * 100).toFixed(6);
+    const remaining = Math.max(0, MAX_GOLD - totalMinted);
+
+    // Circulating estimate (who's actually holding it right now) is a
+    // separate, softer number pulled from published player stats — it can
+    // be lower than totalMinted since spending/redeeming removes gold from
+    // circulation without lowering the fixed max-supply counter.
     const snap = await db.collection('pvp_public').get();
-    let total = 0;
-    let players = 0;
+    let circulating = 0, players = 0;
     let richest = { name: '—', gold: 0 };
     snap.forEach(doc => {
       const d = doc.data();
       const g = d.gold || 0;
-      total += g;
+      circulating += g;
       players++;
       if (g > richest.gold) richest = { name: d.username || d.heroDisplay || 'Unknown', gold: g };
     });
-    // Include the current player in case their own pvp_public doc hasn't
-    // been (re)published yet this session.
     if (!snap.docs.some(d => d.id === currentUser?.uid)) {
-      total += state.gold || 0;
+      circulating += state.gold || 0;
       players++;
       if ((state.gold || 0) > richest.gold) richest = { name: state.username, gold: state.gold };
     }
-    const maxPossibleSupply = players * MAX_GOLD;
-    const pctOfMax = maxPossibleSupply > 0 ? ((total / maxPossibleSupply) * 100).toFixed(4) : '0';
-    const yourShare = total > 0 ? (((state.gold||0) / total) * 100).toFixed(2) : '0';
-    const avg = players > 0 ? Math.round(total / players) : 0;
+    const yourPctOfSupply = totalMinted > 0 ? (((state.gold||0) / totalMinted) * 100).toFixed(4) : '0';
+
     box.innerHTML = `
-      <div><b>Circulating Supply:</b> ${fmtGold(total)} gold <span style="color:#7d8590;">(${players} player${players===1?'':'s'} tracked)</span></div>
-      <div><b>Per-Player Cap:</b> ${fmtGold(MAX_GOLD)} gold</div>
-      <div><b>Theoretical Max Supply:</b> ${fmtGold(maxPossibleSupply)} gold <span style="color:#7d8590;">(cap × tracked players)</span></div>
-      <div><b>% of Theoretical Max in Circulation:</b> ${pctOfMax}%</div>
-      <div><b>Average Holdings:</b> ${fmtGold(avg)} gold/player</div>
+      <div><b>Max Supply (fixed, game-wide):</b> ${fmtGold(MAX_GOLD)} gold</div>
+      <div><b>Total Minted So Far:</b> ${fmtGold(totalMinted)} gold <span style="color:#7d8590;">(${pctMinted}% of max)</span></div>
+      <div><b>Remaining Mintable:</b> ${fmtGold(remaining)} gold</div>
+      <div style="margin-top:6px;"><b>Circulating (held by known players):</b> ${fmtGold(circulating)} gold <span style="color:#7d8590;">(${players} player${players===1?'':'s'} tracked)</span></div>
       <div><b>Richest Known Holder:</b> ${esc(richest.name)} — ${fmtGold(richest.gold)} gold</div>
       <div style="margin-top:6px; border-top:1px solid #21262d; padding-top:6px;">
-        <b>Your Holdings:</b> ${fmtGold(state.gold)} gold (${yourShare}% of circulating supply)
+        <b>Your Holdings:</b> ${fmtGold(state.gold)} gold (${yourPctOfSupply}% of total minted)
       </div>`;
   } catch(e) { box.innerHTML = 'Error loading supply data.'; }
 }
@@ -1391,7 +1416,7 @@ function checkAchievements() {
     if (!state.achievements.includes(a.id) && a.check(state)) {
       state.achievements.push(a.id);
       if (a.reward) {
-        addGold(a.reward.gold);
+        mintGold(a.reward.gold);
         state.xp += Math.round(a.reward.xp * (state.xpBonus || 1));
         print(`🏆 Achievement unlocked: ${a.name}! +${a.reward.gold} gold, +${a.reward.xp} XP.`);
       }
@@ -1414,7 +1439,7 @@ function renderQuest() {
 function claimQuest() {
   if (!state || state.questProgress<3 || state.questClaimed) return;
   state.questClaimed = true;
-  addGold(50);
+  mintGold(50);
   state.xp += Math.round(20*(state.xpBonus||1));
   print("Quest complete! +50 gold, +20 XP.");
   checkLevelUp();
@@ -1465,7 +1490,7 @@ function fightMonster() {
     state.kills++;
     const xpGain = Math.round(m.xp * getXpMultiplier());
     state.xp += xpGain;
-    addGold(m.gold);
+    mintGold(m.gold);
     if (state.questDate===todayKey()) state.questProgress++;
     print(`Victory! +${xpGain} XP, +${m.gold} gold.`); sfxVictory();
     rollLoot();
@@ -1535,13 +1560,13 @@ function fightDungeonWave() {
   if (myHp<=0) {
     state.hp = 1;
     const goldConsolation = 5 + wave * 2;
-    addGold(goldConsolation);
+    mintGold(goldConsolation);
     state.dungeonProgress = 0; // failed
     print(`You were defeated in the dungeon. Received ${goldConsolation} gold.`);
     sfxDefeat();
   } else {
     state.hp = myHp;
-    addGold(monster.gold);
+    mintGold(monster.gold);
     state.xp += Math.round(monster.xp * getXpMultiplier());
     state.kills++;
     print(`Wave ${wave} cleared! +${monster.gold} gold, +${monster.xp} XP.`);
@@ -1585,12 +1610,12 @@ function fightDungeonBoss() {
   if (myHp<=0) {
     state.hp = 1;
     const goldConsolation = 20;
-    addGold(goldConsolation);
+    mintGold(goldConsolation);
     print(`Defeated by the boss. Received ${goldConsolation} gold.`);
     sfxDefeat();
   } else {
     state.hp = myHp;
-    addGold(boss.gold);
+    mintGold(boss.gold);
     state.xp += Math.round(boss.xp * getXpMultiplier());
     state.kills++;
     print(`Dungeon complete! Defeated ${boss.name}! +${boss.gold} gold, +${boss.xp} XP.`);
@@ -1725,7 +1750,7 @@ async function claimGuildQuest() {
     return;
   }
   await guildRef.update({ weeklyQuestClaimed: true });
-  addGold(100);
+  mintGold(100);
   state.xp += Math.round(30 * (state.xpBonus||1));
   print(`Guild quest completed! +100 gold, +30 XP.`);
   checkLevelUp();
@@ -1825,7 +1850,7 @@ function fightBoss() {
   } else {
     const goldWon = 80+state.level*10;
     const xpWon = Math.round((40+state.level*5) * getXpMultiplier());
-    addGold(goldWon); state.xp += xpWon; state.kills++;
+    mintGold(goldWon); state.xp += xpWon; state.kills++;
     print(`Boss down! +${goldWon}g, +${xpWon} XP.`); sfxVictory();
     rollLoot(); rollLoot();
     if (currentEvent?.type === 'lucky_loot') rollLoot();
@@ -1945,7 +1970,7 @@ function fightPlayer(index) {
     state.hp = myHp;
     const goldWon = 15 + opp.level*3;
     const xpWon = Math.round((10+opp.level*2) * getXpMultiplier());
-    addGold(goldWon); state.xp += xpWon; state.kills++;
+    mintGold(goldWon); state.xp += xpWon; state.kills++;
     print(`Victory! +${goldWon}g, +${xpWon} XP.`); sfxVictory();
     rollLoot();
     if (currentEvent?.type === 'lucky_loot') rollLoot();
@@ -2027,7 +2052,7 @@ async function claimTournament() {
       if (data.topUid !== currentUser.uid) throw new Error("You are not the champion.");
       t.update(leaderRef, { claimed: true });
       state.tournamentClaimed = true;
-      addGold(150);
+      mintGold(150);
       state.xp += Math.round(60 * getXpMultiplier());
       print(`*** Tournament Champion! +150g, +60 XP. ***`);
       sfxLevelUp();
@@ -2092,7 +2117,7 @@ function aiAmbush() {
     state.hp = myHp;
     const goldWon = 10+lvl*2;
     const xpWon = Math.round((8+lvl) * getXpMultiplier());
-    addGold(goldWon); state.xp += xpWon;
+    mintGold(goldWon); state.xp += xpWon;
     print(`Ambush repelled! +${goldWon}g, +${xpWon} XP.`); sfxVictory();
     logBattle(bot, 'loss', true);
     checkLevelUp();
