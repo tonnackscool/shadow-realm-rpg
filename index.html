@@ -364,6 +364,13 @@ const db = firebase.firestore();
 </script>
 
 <script>
+// ---------- HTML escaping helper (prevents XSS from usernames/chat/guild names) ----------
+function esc(str) {
+  const d = document.createElement('div');
+  d.textContent = (str === null || str === undefined) ? '' : String(str);
+  return d.innerHTML;
+}
+
 // ========== GAME STATE & HEROES ==========
 const HEROES = [
   { id:'warrior', name:'Warrior', tagline:'Brute strength', str:8, def:5, maxhp:35, staGain:1, desc:'High STR.' },
@@ -562,12 +569,13 @@ function toggleProfile() {
 function renderAvatarPicker() {
   const picker = document.getElementById('avatar-picker');
   picker.innerHTML = AVATARS.map(a =>
-    `<span class="avatar-emoji ${state.avatar===a?'selected':''}" onclick="selectAvatar('${a}')">${a}</span>`
+    `<span class="avatar-emoji ${state.avatar===a?'selected':''}" onclick="selectAvatar('${a}', event)">${a}</span>`
   ).join('');
 }
-function selectAvatar(emoji) {
+function selectAvatar(emoji, ev) {
   document.querySelectorAll('.avatar-emoji').forEach(el => el.classList.remove('selected'));
-  event.target.classList.add('selected');
+  const target = (ev && ev.target) ? ev.target : null;
+  if (target) target.classList.add('selected');
 }
 function changeTheme(color) { /* preview only */ }
 function saveProfile() {
@@ -741,7 +749,7 @@ function getEquippedStats() {
 }
 function getOpponentDisplay(opp) {
   const avatar = opp.avatar || '';
-  return avatar + ' ' + (opp.heroDisplay || opp.username || opp.name || 'Unknown');
+  return esc(avatar) + ' ' + esc(opp.heroDisplay || opp.username || opp.name || 'Unknown');
 }
 
 // ========== RENDER & SAVE ==========
@@ -881,6 +889,10 @@ async function tryAutoConnect() {
   }
 }
 async function redeemGold() {
+  // NOTE: This writes a "pending" redemption request that must be validated
+  // and approved server-side (e.g. Cloud Function + Firestore security rules)
+  // before any real TRI is ever sent. Client-reported gold amounts must never
+  // be trusted directly for payouts.
   if (!walletPubkey || !currentUser) return;
   const TRI_RATE = 100;
   if (state.gold < TRI_RATE) { print(`Need ${TRI_RATE} gold.`); return; }
@@ -1104,7 +1116,15 @@ function craftItem(recipeIndex) {
   if (state.ownedItems.includes(result.id)) {
     print("You already own that item."); return;
   }
+  // Remove consumed ingredients from inventory
   state.ownedItems = state.ownedItems.filter(id => id !== a && id !== b);
+  // FIX: also unequip any consumed ingredient so its stat bonus doesn't
+  // linger after the item no longer exists in ownedItems.
+  for (const slot of EQUIP_SLOTS) {
+    if (state.equipped[slot] === a || state.equipped[slot] === b) {
+      state.equipped[slot] = null;
+    }
+  }
   state.ownedItems.push(result.id);
   state.craftCount = (state.craftCount || 0) + 1;
   print(`Crafted ${result.name}!`);
@@ -1366,12 +1386,12 @@ async function renderGuild() {
     const guild = guildDoc.data();
     const isLeader = guild.leaderUid === currentUser.uid;
     const membersHtml = guild.members.map(m =>
-      `<div class="guild-member"><span>${m.avatar||''} ${m.username}</span><span>${m.uid === guild.leaderUid ? 'Leader' : ''}</span></div>`
+      `<div class="guild-member"><span>${esc(m.avatar||'')} ${esc(m.username)}</span><span>${m.uid === guild.leaderUid ? 'Leader' : ''}</span></div>`
     ).join('');
     const weekTarget = guild.members.length * 10;
     const questDone = guild.weeklyQuestProgress >= weekTarget && guild.weeklyQuestDate === todayKey();
     panel.innerHTML = `
-      <b>${guild.name}</b> | Treasury: ${guild.treasury} gold
+      <b>${esc(guild.name)}</b> | Treasury: ${guild.treasury} gold
       <div style="margin:6px 0;">Members (${guild.members.length}):</div>
       ${membersHtml}
       <div style="margin-top:8px;">Weekly Quest: Kill monsters (${guild.weeklyQuestProgress||0}/${weekTarget})</div>
@@ -1660,7 +1680,7 @@ function fightPlayer(index) {
   state.stamina -= 15; state.gold -= 10;
   initAudio();
   const oppName = getOpponentDisplay(opp);
-  print(`Duel vs ${oppName}!`);
+  print(`Duel vs ${opp.heroDisplay || opp.username || opp.name || 'Unknown'}!`);
   const eq = getEquippedStats();
   let myHp = state.hp, oppHp = opp.maxhp;
   while (myHp>0 && oppHp>0) {
@@ -1738,7 +1758,7 @@ async function claimTournament() {
 
 async function logBattle(opp, result, aiInitiated=false) {
   if (!currentUser) return;
-  const oppName = getOpponentDisplay(opp);
+  const oppName = opp.heroDisplay || opp.username || opp.name || 'Unknown';
   try {
     await db.collection('pvp_battles').add({
       attackerUid: aiInitiated ? null : currentUser.uid,
@@ -1823,7 +1843,7 @@ async function refreshLeaderboard() {
     players.sort((a,b) => b.level - a.level || (b.kills||0) - (a.kills||0));
     list.innerHTML = players.slice(0,10).map((p,i) => `
       <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #21262d;${p.uid===currentUser?.uid?'color:#e3b341':''}">
-        <span>#${i+1} ${p.avatar||''} ${p.username || p.heroDisplay || 'Unknown'} ${p.uid===currentUser?.uid?'(you)':''}</span>
+        <span>#${i+1} ${esc(p.avatar||'')} ${esc(p.username || p.heroDisplay || 'Unknown')} ${p.uid===currentUser?.uid?'(you)':''}</span>
         <span>Lvl ${p.level} | ${p.kills||0} kills</span>
       </div>`).join('') || 'No players yet.';
   } catch(e) { list.innerHTML = 'Error.'; }
@@ -1840,7 +1860,7 @@ async function refreshBattleLog() {
       const youWon = (b.attackerUid===currentUser.uid && b.result==='win') || (b.defenderUid===currentUser.uid && b.result==='loss');
       const opp = b.aiInitiated ? b.attackerName : b.defenderName;
       return `<div style="display:flex;justify-content:space-between;">
-        <span>${b.aiInitiated?`${opp} ambushed you`:`You vs ${opp}`}</span>
+        <span>${b.aiInitiated?`${esc(opp)} ambushed you`:`You vs ${esc(opp)}`}</span>
         <b style="color:${youWon?'#3fb950':'#f85149'};">${youWon?'WIN':'LOSS'}</b>
       </div>`;
     }).join('') || 'No battles yet.';
@@ -1861,7 +1881,8 @@ function startTavernListener() {
       snapshot.forEach(doc => {
         const msg = doc.data();
         const time = new Date(msg.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-        box.innerHTML += `<div><b>${msg.avatar||''} ${msg.username}:</b> ${msg.text} <span style="color:#7d8590;font-size:11px;">${time}</span></div>`;
+        // FIX: escape user-controlled fields (username, avatar, text) to prevent stored XSS
+        box.innerHTML += `<div><b>${esc(msg.avatar||'')} ${esc(msg.username)}:</b> ${esc(msg.text)} <span style="color:#7d8590;font-size:11px;">${esc(time)}</span></div>`;
       });
       box.scrollTop = box.scrollHeight;
     });
@@ -1906,6 +1927,15 @@ function resetGame() {
   if (!confirm("Reset?")) return;
   state = null;
   db.collection('saves').doc(currentUser.uid).delete();
+  // FIX: also clear in-memory session globals so nothing leaks from the
+  // previous character into the new one (cooldowns, arena cache, etc.)
+  if (cooldownInterval) { clearInterval(cooldownInterval); cooldownInterval = null; }
+  actionCooldownRemaining = 0;
+  arenaRecords = [];
+  lastPublishTime = 0;
+  document.getElementById('cooldown-display').textContent = '';
+  setActionButtonsDisabled(false);
+  if (tavernUnsubscribe) { tavernUnsubscribe(); tavernUnsubscribe = null; }
   document.getElementById('game-ui').style.display='none';
   document.getElementById('hero-select').style.display='block';
   renderHeroSelect();
