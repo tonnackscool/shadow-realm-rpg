@@ -1744,8 +1744,12 @@ async function renderGuild() {
   const panel = document.getElementById('guild-panel');
   if (!panel || !state) return;
   if (!state.guildId) {
-    panel.innerHTML = `<button onclick="createGuild()">Create Guild (500g)</button>
-      <button onclick="showGuildList()">Join Guild</button>`;
+    panel.innerHTML = `
+      <div style="color:#7d8590;margin-bottom:8px;">You are not in a guild.</div>
+      <div class="btnrow">
+        <button onclick="showGuildList()">Browse & Join Guild (100g)</button>
+        <button onclick="createGuild()">Create Guild (500g)</button>
+      </div>`;
     return;
   }
   try {
@@ -1785,42 +1789,113 @@ async function createGuild() {
   // Check unique name
   const existing = await db.collection('guilds').where('name','==',name).get();
   if (!existing.empty) { print('Guild name already exists.'); return; }
+  const trimmed = name.trim().slice(0, 24);
+  if (!trimmed) { print('Invalid guild name.'); return; }
   addGold(-(500));
   const guildRef = db.collection('guilds').doc();
-  await guildRef.set({
-    name,
-    leaderUid: currentUser.uid,
-    members: [{ uid: currentUser.uid, username: state.username, avatar: state.avatar }],
-    treasury: 0,
-    weeklyQuestProgress: 0,
-    weeklyQuestDate: todayKey(),
-    weeklyQuestClaimed: false
-  });
-  state.guildId = guildRef.id;
-  print(`Guild ${name} created!`);
-  render();
+  try {
+    await guildRef.set({
+      name: trimmed,
+      leaderUid: currentUser.uid,
+      members: [{ uid: currentUser.uid, username: state.username, avatar: state.avatar, level: state.level || 1 }],
+      treasury: 0,
+      weeklyQuestProgress: 0,
+      weeklyQuestDate: todayKey(),
+      weeklyQuestClaimed: false
+    });
+    state.guildId = guildRef.id;
+    print(`Guild ${trimmed} created!`);
+    render();
+  } catch(e) {
+    addGold(500); // refund on failure
+    print('Failed to create guild.');
+  }
 }
 
 async function showGuildList() {
+  const panel = document.getElementById('guild-panel');
+  if (!panel || !state) return;
   if (state.gold < 100) { print('Need 100 gold to join a guild.'); return; }
-  const snapshot = await db.collection('guilds').get();
-  const guilds = [];
-  snapshot.forEach(doc => guilds.push({ id: doc.id, ...doc.data() }));
-  if (guilds.length === 0) { print('No guilds available.'); return; }
-  const list = guilds.map(g => `${g.name} (${g.members.length} members)`).join('\n');
-  const choice = prompt('Choose guild to join (type name):\n' + list);
-  const guild = guilds.find(g => g.name === choice);
-  if (!guild) return;
-  addGold(-(100));
-  // Join guild
-  await db.collection('guilds').doc(guild.id).update({
-    members: firebase.firestore.FieldValue.arrayUnion({
-      uid: currentUser.uid, username: state.username, avatar: state.avatar
-    })
-  });
-  state.guildId = guild.id;
-  print(`Joined ${guild.name}!`);
-  render();
+
+  panel.innerHTML = '<div style="color:#7d8590;">Loading guilds...</div>';
+  try {
+    const snapshot = await db.collection('guilds').get();
+    const guilds = [];
+    snapshot.forEach(doc => guilds.push({ id: doc.id, ...doc.data() }));
+
+    if (guilds.length === 0) {
+      panel.innerHTML = `
+        <div style="color:#7d8590; margin-bottom:8px;">No guilds available yet.</div>
+        <button onclick="createGuild()">Create Guild (500g)</button>
+        <button onclick="renderGuild()">Back</button>`;
+      return;
+    }
+
+    // Sort by member count (largest first)
+    guilds.sort((a, b) => (b.members?.length || 0) - (a.members?.length || 0));
+
+    const listHtml = guilds.map(g => {
+      const memberCount = g.members?.length || 0;
+      const leader = g.members?.find(m => m.uid === g.leaderUid);
+      const leaderName = leader ? leader.username : 'Unknown';
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #21262d;">
+        <div>
+          <b style="color:#e3b341;">${esc(g.name)}</b>
+          <div style="font-size:12px;color:#7d8590;">${memberCount} member${memberCount===1?'':'s'} · Leader: ${esc(leaderName)} · Treasury: ${fmtGold(g.treasury||0)}g</div>
+        </div>
+        <button onclick="joinGuild('${g.id}')">Join (100g)</button>
+      </div>`;
+    }).join('');
+
+    panel.innerHTML = `
+      <div style="margin-bottom:8px;color:#7d8590;">Select a guild to join (costs 100 gold):</div>
+      ${listHtml}
+      <div class="btnrow" style="margin-top:10px;">
+        <button onclick="createGuild()">Create Guild (500g)</button>
+        <button onclick="renderGuild()">Back</button>
+      </div>`;
+  } catch(e) {
+    panel.innerHTML = `
+      <div style="color:#f85149;">Failed to load guilds.</div>
+      <button onclick="renderGuild()">Back</button>`;
+  }
+}
+
+async function joinGuild(guildId) {
+  if (!state || !currentUser) return;
+  if (state.guildId) { print('You are already in a guild.'); return; }
+  if (state.gold < 100) { print('Need 100 gold to join a guild.'); return; }
+
+  try {
+    const guildRef = db.collection('guilds').doc(guildId);
+    const guildDoc = await guildRef.get();
+    if (!guildDoc.exists) { print('Guild no longer exists.'); showGuildList(); return; }
+
+    const guild = guildDoc.data();
+    // Prevent joining if already a member (e.g. multi-tab)
+    if (guild.members?.some(m => m.uid === currentUser.uid)) {
+      state.guildId = guildId;
+      print(`Already a member of ${guild.name}.`);
+      render();
+      return;
+    }
+
+    addGold(-(100));
+    await guildRef.update({
+      members: firebase.firestore.FieldValue.arrayUnion({
+        uid: currentUser.uid,
+        username: state.username,
+        avatar: state.avatar,
+        level: state.level || 1
+      })
+    });
+    state.guildId = guildId;
+    print(`Joined ${guild.name}!`);
+    render();
+  } catch(e) {
+    addGold(100); // refund on failure
+    print('Failed to join guild.');
+  }
 }
 
 async function contributeToGuild() {
