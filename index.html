@@ -430,7 +430,33 @@ let sfxGain = null;
 let sfxVolume = 0.1;
 let ambushesEnabled = true;
 
-const EQUIP_SLOTS = ['weapon', 'armor', 'accessory'];
+// Full head-to-feet equipment slots
+const EQUIP_SLOTS = ['head', 'chest', 'legs', 'feet', 'weapon', 'offhand', 'accessory'];
+const SLOT_LABELS = {
+  head: 'Head', chest: 'Chest', legs: 'Legs', feet: 'Feet',
+  weapon: 'Weapon', offhand: 'Off-hand', accessory: 'Accessory'
+};
+function emptyEquipped() {
+  return { head:null, chest:null, legs:null, feet:null, weapon:null, offhand:null, accessory:null };
+}
+// Migrate old 3-slot saves (weapon/armor/accessory) → new layout
+function migrateEquipped(eq) {
+  if (!eq) return emptyEquipped();
+  const next = emptyEquipped();
+  // Collect every item id that was equipped under any key
+  const wornIds = new Set();
+  Object.values(eq).forEach(id => { if (id) wornIds.add(id); });
+  if (eq.armor) wornIds.add(eq.armor); // legacy
+  // Place each item into the slot its definition says it belongs to
+  wornIds.forEach(id => {
+    const item = findShopItem(id);
+    if (item && item.slot && EQUIP_SLOTS.includes(item.slot)) {
+      // If slot already filled, keep the first one; bag still owns both
+      if (!next[item.slot]) next[item.slot] = id;
+    }
+  });
+  return next;
+}
 
 // ---------- Gold cap / money management ----------
 const MAX_GOLD = 21000000000; // 21 billion gold hard cap per player
@@ -534,12 +560,14 @@ const ACHIEVEMENTS = [
 const CRAFT_RECIPES = [
   { ingredients: ['iron_sword','steel_shield'], result: 'warrior_plate' },
   { ingredients: ['dragon_fang','phoenix_heart'], result: 'dragonheart_amulet' },
-  { ingredients: ['vigor_ring','elixir_ages'], result: 'eternal_ring' }
+  { ingredients: ['vigor_ring','elixir_ages'], result: 'eternal_ring' },
+  { ingredients: ['leather_boots','iron_greaves'], result: 'shadow_treads' }
 ];
 const CRAFTED_ITEMS = {
-  warrior_plate: { id:'warrior_plate', name:'Warrior’s Plate', desc:'+4 STR, +4 DEF, +20 HP', price:999, type:'equipment', slot:'armor', str:4, def:4, maxhp:20 },
+  warrior_plate: { id:'warrior_plate', name:"Warrior's Plate", desc:'+4 STR, +4 DEF, +20 HP', price:999, type:'equipment', slot:'chest', str:4, def:4, maxhp:20 },
   dragonheart_amulet: { id:'dragonheart_amulet', name:'Dragonheart Amulet', desc:'+10 STR, +50 HP', price:999, type:'equipment', slot:'accessory', str:10, maxhp:50 },
-  eternal_ring: { id:'eternal_ring', name:'Eternal Ring', desc:'+40 HP, +5 STR, +5 DEF', price:999, type:'equipment', slot:'accessory', maxhp:40, str:5, def:5 }
+  eternal_ring: { id:'eternal_ring', name:'Eternal Ring', desc:'+40 HP, +5 STR, +5 DEF', price:999, type:'equipment', slot:'accessory', maxhp:40, str:5, def:5 },
+  shadow_treads: { id:'shadow_treads', name:'Shadow Treads', desc:'+3 DEF, +3 STR, +10 HP', price:999, type:'equipment', slot:'feet', def:3, str:3, maxhp:10 }
 };
 
 // Daily events
@@ -797,7 +825,7 @@ function selectHero(id) {
     gold:0, stamina:100, maxStamina:100,
     staGain:h.staGain, xpBonus:h.xpBonus||1,
     kills:0,
-    ownedItems:[], equipped:{weapon:null,armor:null,accessory:null},
+    ownedItems:[], equipped: emptyEquipped(),
     questDate:null, questProgress:0, questClaimed:false,
     lastBossDate:null,
     tournamentDate:null, tournamentWins:0, tournamentClaimed:false,
@@ -916,7 +944,7 @@ async function load() {
     if (doc.exists) {
       state = doc.data();
       if (!state.ownedItems) state.ownedItems = [];
-      if (!state.equipped) state.equipped = {weapon:null,armor:null,accessory:null};
+      state.equipped = migrateEquipped(state.equipped);
       if (state.questDate === undefined) state.questDate = null;
       if (state.questProgress === undefined) state.questProgress = 0;
       if (state.questClaimed === undefined) state.questClaimed = false;
@@ -1076,17 +1104,26 @@ function rollLoot() {
 
 // ========== SHOP & INVENTORY ==========
 const SHOP_ITEMS = [
+  // Consumables
   { id:'potion_hp', name:'Health Potion', desc:'+25 HP', price:30, type:'consumable' },
   { id:'potion_sta', name:'Stamina Potion', desc:'+30 STA', price:25, type:'consumable' },
+  // Head → Feet starter gear
+  { id:'leather_cap', name:'Leather Cap', desc:'+1 DEF', price:80, type:'equipment', slot:'head', def:1 },
+  { id:'cloth_tunic', name:'Cloth Tunic', desc:'+1 DEF, +5 HP', price:100, type:'equipment', slot:'chest', def:1, maxhp:5 },
+  { id:'iron_greaves', name:'Iron Greaves', desc:'+2 DEF', price:120, type:'equipment', slot:'legs', def:2 },
+  { id:'leather_boots', name:'Leather Boots', desc:'+1 DEF', price:80, type:'equipment', slot:'feet', def:1 },
   { id:'iron_sword', name:'Iron Sword', desc:'+3 STR', price:150, type:'equipment', slot:'weapon', str:3 },
-  { id:'steel_shield', name:'Steel Shield', desc:'+3 DEF', price:150, type:'equipment', slot:'armor', def:3 },
+  { id:'steel_shield', name:'Steel Shield', desc:'+3 DEF', price:150, type:'equipment', slot:'offhand', def:3 },
   { id:'vigor_ring', name:'Ring of Vigor', desc:'+15 Max HP', price:200, type:'equipment', slot:'accessory', maxhp:15 }
 ];
 const FEATURED_ITEMS = [
+  { id:'warlord_crown', name:'Warlord Crown', desc:'+5 STR, +5 DEF', price:1300, type:'equipment', slot:'head', str:5, def:5 },
+  { id:'titan_plate', name:'Titan Plate', desc:'+8 DEF', price:900, type:'equipment', slot:'chest', def:8 },
+  { id:'shadow_leggings', name:'Shadow Leggings', desc:'+5 DEF, +2 STR', price:850, type:'equipment', slot:'legs', def:5, str:2 },
+  { id:'windwalker_boots', name:'Windwalker Boots', desc:'+3 DEF, +15 HP', price:700, type:'equipment', slot:'feet', def:3, maxhp:15 },
   { id:'dragon_fang', name:'Dragon Fang', desc:'+8 STR', price:900, type:'equipment', slot:'weapon', str:8 },
-  { id:'titan_plate', name:'Titan Plate', desc:'+8 DEF', price:900, type:'equipment', slot:'armor', def:8 },
+  { id:'aegis_shield', name:'Aegis Shield', desc:'+6 DEF, +10 HP', price:950, type:'equipment', slot:'offhand', def:6, maxhp:10 },
   { id:'phoenix_heart', name:'Phoenix Heart', desc:'+40 Max HP', price:1000, type:'equipment', slot:'accessory', maxhp:40 },
-  { id:'warlord_crown', name:'Warlord Crown', desc:'+5 STR, +5 DEF', price:1300, type:'equipment', slot:'accessory', str:5, def:5 },
   { id:'elixir_ages', name:'Elixir of Ages', desc:'+20 HP, +2 STR, +2 DEF', price:1100, type:'equipment', slot:'accessory', maxhp:20, str:2, def:2 }
 ];
 
@@ -1147,23 +1184,51 @@ function renderMysteryMerchant() {
 function renderInventory() {
   const box = document.getElementById('inventory-box');
   if (!box || !state) return;
-  const items = state.ownedItems.map(id => findShopItem(id)).filter(Boolean);
-  if (items.length === 0) {
-    box.innerHTML = '<div style="color:#7d8590;">No items owned.</div>';
-    return;
-  }
-  box.innerHTML = items.map(item => {
-    const slot = item.slot || 'consumable';
-    const equipped = Object.entries(state.equipped).find(([s,id])=>id===item.id);
-    const buyback = getBuybackPrice(item);
+
+  // Paper-doll: head → feet equipped view
+  const slotRows = EQUIP_SLOTS.map(slot => {
+    const itemId = state.equipped[slot];
+    const item = itemId ? findShopItem(itemId) : null;
+    const label = SLOT_LABELS[slot] || slot;
+    if (item) {
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #21262d;">
+        <span style="color:#7d8590;min-width:80px;">${label}</span>
+        <span style="flex:1;"><b style="color:#e3b341;">${esc(item.name)}</b> <span style="color:#7d8590;font-size:12px;">${esc(item.desc)}</span></span>
+        <button onclick="equipItem('${item.id}')">Unequip</button>
+      </div>`;
+    }
     return `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #21262d;">
-      <span><b>${item.name}</b> (${slot}) ${equipped ? '[Equipped]' : ''}</span>
-      <div>
-        ${item.slot ? `<button onclick="equipItem('${item.id}')">${equipped?'Unequip':'Equip'}</button>` : ''}
-        ${item.slot ? `<button onclick="sellToShop('${item.id}')" title="Sell back to shop">Sell (${fmtGold(buyback)}g)</button>` : ''}
-      </div>
+      <span style="color:#7d8590;min-width:80px;">${label}</span>
+      <span style="color:#30363d;flex:1;">— empty —</span>
     </div>`;
   }).join('');
+
+  // Bag: owned but not necessarily equipped
+  const items = state.ownedItems.map(id => findShopItem(id)).filter(Boolean);
+  let bagHtml = '';
+  if (items.length === 0) {
+    bagHtml = '<div style="color:#7d8590;">No items owned.</div>';
+  } else {
+    bagHtml = items.map(item => {
+      const slot = item.slot || 'consumable';
+      const isEquipped = Object.values(state.equipped).includes(item.id);
+      const buyback = getBuybackPrice(item);
+      const slotLabel = SLOT_LABELS[slot] || slot;
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #21262d;">
+        <span><b>${esc(item.name)}</b> <span style="color:#7d8590;">(${slotLabel})</span> ${isEquipped ? '<span style="color:#3fb950;">[On]</span>' : ''}</span>
+        <div>
+          ${item.slot ? `<button onclick="equipItem('${item.id}')">${isEquipped?'Unequip':'Equip'}</button>` : ''}
+          ${item.slot ? `<button onclick="sellToShop('${item.id}')" title="Sell back to shop">Sell (${fmtGold(buyback)}g)</button>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  box.innerHTML = `
+    <div style="color:#e3b341;font-size:12px;margin-bottom:4px;">EQUIPPED (Head → Feet)</div>
+    ${slotRows}
+    <div style="color:#e3b341;font-size:12px;margin:12px 0 4px;">BAG</div>
+    ${bagHtml}`;
 }
 
 // Shop buyback: sell an owned equipment item back to the NPC shop for a
@@ -1193,13 +1258,17 @@ function sellToShop(itemId) {
 function equipItem(itemId) {
   const item = findShopItem(itemId);
   if (!item || !item.slot) return;
+  if (!EQUIP_SLOTS.includes(item.slot)) return;
+  if (!state.ownedItems.includes(itemId)) { print("You don't own that item."); return; }
   const slot = item.slot;
   if (state.equipped[slot] === itemId) {
     state.equipped[slot] = null;
-    print(`Unequipped ${item.name}.`);
+    print(`Unequipped ${item.name} (${SLOT_LABELS[slot]}).`);
   } else {
+    const prev = state.equipped[slot] ? findShopItem(state.equipped[slot]) : null;
     state.equipped[slot] = itemId;
-    print(`Equipped ${item.name}.`);
+    if (prev) print(`Swapped ${prev.name} → ${item.name} (${SLOT_LABELS[slot]}).`);
+    else print(`Equipped ${item.name} (${SLOT_LABELS[slot]}).`);
   }
   render();
 }
