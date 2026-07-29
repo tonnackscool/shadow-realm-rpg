@@ -242,7 +242,7 @@
   <div id="rank"></div>
   <div id="stats"></div>
   <div id="bar-wrap"><div id="bar"></div></div>
-  <div class="timer" id="stamina-timer">Next regen: --s</div>
+  <div class="timer" id="stamina-timer">STA regen: --s · HP regen: --s</div>
 
   <!-- Training -->
   <div class="section-title">Train (uses stamina)</div>
@@ -2452,21 +2452,53 @@ function sendChat() {
   input.value = '';
 }
 
-// ========== STAMINA TIMER ==========
-let regenTick = 6;
+// ========== STAMINA + HP REGEN ==========
+let regenTick = 6;   // stamina every 6s
+let hpRegenTick = 8; // HP every 8s
+const HP_REGEN_AMOUNT = 1; // +1 HP per tick (out of combat passive)
+
 setInterval(() => {
-  if (state && state.stamina < state.maxStamina) {
+  if (!state) return;
+  const eq = getEquippedStats();
+  const totalMaxHp = state.maxhp + eq.maxhp;
+  let needsRender = false;
+
+  // --- Stamina regen ---
+  let staText;
+  if (state.stamina < state.maxStamina) {
     regenTick--;
-    document.getElementById('stamina-timer').textContent = `Next regen: ${regenTick}s`;
     if (regenTick <= 0) {
-      state.stamina = Math.min(state.maxStamina, state.stamina + (state.staGain||1));
+      state.stamina = Math.min(state.maxStamina, state.stamina + (state.staGain || 1));
       regenTick = 6;
-      render();
+      needsRender = true;
     }
+    staText = `STA regen: ${regenTick}s`;
   } else {
-    document.getElementById('stamina-timer').textContent = 'Stamina full';
     regenTick = 6;
+    staText = 'STA full';
   }
+
+  // --- HP regen (passive, only when alive and not full) ---
+  let hpText;
+  if (state.hp > 0 && state.hp < totalMaxHp) {
+    hpRegenTick--;
+    if (hpRegenTick <= 0) {
+      state.hp = Math.min(totalMaxHp, state.hp + HP_REGEN_AMOUNT);
+      hpRegenTick = 8;
+      needsRender = true;
+    }
+    hpText = `HP regen: ${hpRegenTick}s (+${HP_REGEN_AMOUNT})`;
+  } else if (state.hp <= 0) {
+    hpRegenTick = 8;
+    hpText = 'HP: down';
+  } else {
+    hpRegenTick = 8;
+    hpText = 'HP full';
+  }
+
+  const timerEl = document.getElementById('stamina-timer');
+  if (timerEl) timerEl.textContent = `${staText} · ${hpText}`;
+  if (needsRender) render();
 }, 1000);
 
 setInterval(() => {
