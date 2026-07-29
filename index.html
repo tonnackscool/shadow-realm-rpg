@@ -867,10 +867,64 @@ function todayKey() {
 function useStamina(cost) {
   let finalCost = cost;
   if (currentEvent?.type === 'half_stamina') finalCost = Math.ceil(cost / 2);
+  // Guild perk: cheaper hunting (applied when cost is the hunt cost of 10)
+  const perks = getGuildPerks();
+  if (cost >= 10 && perks.huntDiscount > 0) {
+    finalCost = Math.max(1, finalCost - perks.huntDiscount);
+  }
   if (state.stamina < finalCost) { print(`Not enough stamina (need ${finalCost}).`); return false; }
   state.stamina -= finalCost;
   return true;
 }
+
+// Cached guild info for synchronous perk checks (updated when guild panel loads)
+let cachedGuildTreasury = 0;
+let cachedGuildName = null;
+
+function getGuildPerks() {
+  // No guild → no bonuses
+  if (!state || !state.guildId) {
+    return {
+      xpMult: 1, restCost: 20, huntDiscount: 0,
+      str: 0, def: 0, maxhp: 0, hpRegenBonus: 0,
+      label: null
+    };
+  }
+  // Base membership perks
+  const perks = {
+    xpMult: 1.10,       // +10% XP
+    restCost: 15,       // Rest costs 15g instead of 20g
+    huntDiscount: 1,    // Hunt costs 1 less STA
+    str: 0,
+    def: 1,             // +1 DEF for being in a guild
+    maxhp: 5,           // +5 Max HP
+    hpRegenBonus: 0,
+    label: 'Member'
+  };
+  // Treasury tiers (encourage donations)
+  if (cachedGuildTreasury >= 500) {
+    perks.str += 1;
+    perks.def += 1;
+    perks.label = 'Established';
+  }
+  if (cachedGuildTreasury >= 1500) {
+    perks.maxhp += 10;
+    perks.xpMult = 1.15;
+    perks.hpRegenBonus = 1; // +1 extra HP per regen tick
+    perks.label = 'Prosperous';
+  }
+  if (cachedGuildTreasury >= 5000) {
+    perks.str += 1;
+    perks.def += 1;
+    perks.maxhp += 10;
+    perks.xpMult = 1.20;
+    perks.huntDiscount = 2;
+    perks.restCost = 10;
+    perks.label = 'Legendary';
+  }
+  return perks;
+}
+
 function getEquippedStats() {
   let bonus = {str:0, def:0, maxhp:0};
   if (!state) return bonus;
@@ -885,6 +939,11 @@ function getEquippedStats() {
       }
     }
   }
+  // Guild passive stat bonuses
+  const g = getGuildPerks();
+  bonus.str += g.str;
+  bonus.def += g.def;
+  bonus.maxhp += g.maxhp;
   return bonus;
 }
 function getOpponentDisplay(opp) {
@@ -1067,11 +1126,13 @@ function train(type) {
 }
 function rest() {
   if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
-  if (state.gold < 20) { print(`Need 20 gold.`); return; }
-  addGold(-(20));
+  const cost = getGuildPerks().restCost;
+  if (state.gold < cost) { print(`Need ${cost} gold.`); return; }
+  addGold(-(cost));
   state.stamina = Math.min(state.maxStamina, state.stamina + 15);
   state.hp = Math.min(state.maxhp + getEquippedStats().maxhp, state.hp + 5);
-  print(`You rest. (20g burned)`); sfxRest();
+  const note = cost < 20 ? ` (guild discount: ${cost}g burned)` : ` (${cost}g burned)`;
+  print(`You rest.${note}`); sfxRest();
   startCooldown(60);
   render();
 }
@@ -1623,7 +1684,8 @@ function claimQuest() {
 
 // ========== FIGHT SYSTEM (with event modifiers) ==========
 function getXpMultiplier() {
-  return (currentEvent?.type === 'double_xp' ? 2 : 1) * (state.xpBonus || 1);
+  const guildXp = getGuildPerks().xpMult || 1;
+  return (currentEvent?.type === 'double_xp' ? 2 : 1) * (state.xpBonus || 1) * guildXp;
 }
 
 function fightMonster() {
@@ -1813,8 +1875,14 @@ async function renderGuild() {
   const panel = document.getElementById('guild-panel');
   if (!panel || !state) return;
   if (!state.guildId) {
+    cachedGuildTreasury = 0;
+    cachedGuildName = null;
     panel.innerHTML = `
-      <div style="color:#7d8590;margin-bottom:8px;">You are not in a guild.</div>
+      <div style="color:#7d8590;margin-bottom:6px;">You are not in a guild.</div>
+      <div style="font-size:12px;color:#3fb950;margin-bottom:8px;padding:6px;background:#0b0d10;border-radius:4px;border:1px solid #30363d;">
+        Guild perks: +10% XP · Rest 15g · Hunt −1 STA · +1 DEF · +5 HP<br>
+        <span style="color:#7d8590;">Higher treasury unlocks stronger ranks (up to +20% XP, −2 STA, Rest 10g)</span>
+      </div>
       <div class="btnrow">
         <button onclick="showGuildList()">Browse & Join Guild (100g)</button>
         <button onclick="createGuild()">Create Guild (500g)</button>
@@ -1829,17 +1897,39 @@ async function renderGuild() {
       return;
     }
     const guild = guildDoc.data();
+    cachedGuildTreasury = guild.treasury || 0;
+    cachedGuildName = guild.name || null;
     const isLeader = guild.leaderUid === currentUser.uid;
     const membersHtml = guild.members.map(m =>
       `<div class="guild-member"><span>${esc(m.avatar||'')} ${esc(m.username)}</span><span>${m.uid === guild.leaderUid ? 'Leader' : ''}</span></div>`
     ).join('');
     const weekTarget = guild.members.length * 10;
     const questDone = guild.weeklyQuestProgress >= weekTarget && guild.weeklyQuestDate === todayKey();
+    const perks = getGuildPerks();
+    const perkLines = [
+      `+${Math.round((perks.xpMult - 1) * 100)}% XP`,
+      `Rest ${perks.restCost}g`,
+      `Hunt -${perks.huntDiscount} STA`,
+      perks.str ? `+${perks.str} STR` : null,
+      perks.def ? `+${perks.def} DEF` : null,
+      perks.maxhp ? `+${perks.maxhp} HP` : null,
+      perks.hpRegenBonus ? `+${perks.hpRegenBonus} HP regen` : null
+    ].filter(Boolean).join(' · ');
+    const nextTier = cachedGuildTreasury < 500 ? '500g for Established'
+      : cachedGuildTreasury < 1500 ? '1,500g for Prosperous'
+      : cachedGuildTreasury < 5000 ? '5,000g for Legendary'
+      : 'Max tier';
     panel.innerHTML = `
-      <b>${esc(guild.name)}</b> | Treasury: ${guild.treasury} gold
+      <b>${esc(guild.name)}</b> | Treasury: ${fmtGold(guild.treasury||0)} gold
+      <div style="margin:6px 0; padding:6px; background:#0b0d10; border-radius:4px; border:1px solid #30363d;">
+        <div style="color:#e3b341;font-size:12px;">Guild Rank: ${perks.label || 'Member'}</div>
+        <div style="font-size:12px;color:#3fb950;">${perkLines}</div>
+        <div style="font-size:11px;color:#7d8590;margin-top:2px;">Next tier: ${nextTier} treasury</div>
+      </div>
       <div style="margin:6px 0;">Members (${guild.members.length}):</div>
       ${membersHtml}
       <div style="margin-top:8px;">Weekly Quest: Kill monsters (${guild.weeklyQuestProgress||0}/${weekTarget})</div>
+      <div style="font-size:12px;color:#7d8590;">Reward: 100g + 30 XP each</div>
       <div class="btnrow" style="margin-top:8px;">
         <button onclick="contributeToGuild()">Contribute 50g</button>
         ${questDone && !guild.weeklyQuestClaimed ? `<button onclick="claimGuildQuest()">Claim Quest Reward</button>` : ''}
@@ -1873,7 +1963,9 @@ async function createGuild() {
       weeklyQuestClaimed: false
     });
     state.guildId = guildRef.id;
-    print(`Guild ${trimmed} created!`);
+    cachedGuildTreasury = 0;
+    cachedGuildName = trimmed;
+    print(`Guild ${trimmed} created! Guild bonuses active.`);
     render();
   } catch(e) {
     addGold(500); // refund on failure
@@ -1944,6 +2036,8 @@ async function joinGuild(guildId) {
     // Prevent joining if already a member (e.g. multi-tab)
     if (guild.members?.some(m => m.uid === currentUser.uid)) {
       state.guildId = guildId;
+      cachedGuildTreasury = guild.treasury || 0;
+      cachedGuildName = guild.name;
       print(`Already a member of ${guild.name}.`);
       render();
       return;
@@ -1959,7 +2053,9 @@ async function joinGuild(guildId) {
       })
     });
     state.guildId = guildId;
-    print(`Joined ${guild.name}!`);
+    cachedGuildTreasury = guild.treasury || 0;
+    cachedGuildName = guild.name;
+    print(`Joined ${guild.name}! Guild bonuses now active.`);
     render();
   } catch(e) {
     addGold(100); // refund on failure
@@ -1970,10 +2066,16 @@ async function joinGuild(guildId) {
 async function contributeToGuild() {
   if (state.gold < 50) { print('Need 50 gold.'); return; }
   addGold(-(50));
-  await db.collection('guilds').doc(state.guildId).update({
-    treasury: firebase.firestore.FieldValue.increment(50)
-  });
-  print('Contributed 50 gold to guild treasury.');
+  try {
+    await db.collection('guilds').doc(state.guildId).update({
+      treasury: firebase.firestore.FieldValue.increment(50)
+    });
+    cachedGuildTreasury += 50;
+    print('Contributed 50 gold to guild treasury.');
+  } catch(e) {
+    addGold(50);
+    print('Contribution failed.');
+  }
   render();
 }
 
@@ -2041,11 +2143,17 @@ async function declareWarPrompt() {
 
 async function leaveGuild() {
   if (!state.guildId) return;
-  await db.collection('guilds').doc(state.guildId).update({
-    members: firebase.firestore.FieldValue.arrayRemove({ uid: currentUser.uid, username: state.username, avatar: state.avatar })
-  });
+  try {
+    await db.collection('guilds').doc(state.guildId).update({
+      members: firebase.firestore.FieldValue.arrayRemove({
+        uid: currentUser.uid, username: state.username, avatar: state.avatar, level: state.level || 1
+      })
+    });
+  } catch(e) { /* still clear local */ }
   state.guildId = null;
-  print('Left guild.');
+  cachedGuildTreasury = 0;
+  cachedGuildName = null;
+  print('Left guild. Guild bonuses removed.');
   render();
 }
 
@@ -2480,14 +2588,15 @@ setInterval(() => {
 
   // --- HP regen (passive, only when alive and not full) ---
   let hpText;
+  const hpGain = HP_REGEN_AMOUNT + (getGuildPerks().hpRegenBonus || 0);
   if (state.hp > 0 && state.hp < totalMaxHp) {
     hpRegenTick--;
     if (hpRegenTick <= 0) {
-      state.hp = Math.min(totalMaxHp, state.hp + HP_REGEN_AMOUNT);
+      state.hp = Math.min(totalMaxHp, state.hp + hpGain);
       hpRegenTick = 8;
       needsRender = true;
     }
-    hpText = `HP regen: ${hpRegenTick}s (+${HP_REGEN_AMOUNT})`;
+    hpText = `HP regen: ${hpRegenTick}s (+${hpGain})`;
   } else if (state.hp <= 0) {
     hpRegenTick = 8;
     hpText = 'HP: down';
