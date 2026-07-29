@@ -312,6 +312,9 @@
     <div class="btnrow" style="margin-top:8px;">
       <button onclick="refreshGoldSupply()">Refresh Supply Info</button>
     </div>
+    <div style="font-size:11px;color:#7d8590;margin-top:6px;">
+      Equipment buys → 30% Shop Treasury · Market sales → 5% Global Pool · Potions/Rest/PvP → burned
+    </div>
   </div>
 
   <!-- Equipment / Inventory -->
@@ -431,6 +434,9 @@ const EQUIP_SLOTS = ['weapon', 'armor', 'accessory'];
 
 // ---------- Gold cap / money management ----------
 const MAX_GOLD = 21000000000; // 21 billion gold hard cap per player
+const SHOP_TREASURY_RATE = 0.30; // 30% of equipment purchases go to shop treasury
+const MARKET_TAX_RATE = 0.05;    // 5% of player-market sales go to global pool
+
 function addGold(amount) {
   if (!state) return;
   const before = state.gold || 0;
@@ -450,19 +456,56 @@ function fmtGold(n) {
 // fixed ceiling for the whole game's economy. Spending, trading on the
 // market, and losing gold in PvP don't affect this counter — it only tracks
 // gold that has ever been newly created.
+//
+// Also tracks:
+//   shopTreasury  – portion of NPC equipment purchases (soft sink + flavor)
+//   globalPool    – market taxes + overflow; funds future server events
 async function mintGold(amount) {
-  if (!state || amount <= 0) return;
-  addGold(amount); // optimistic local grant for responsive gameplay
-  if (!currentUser) return;
+  if (!state || amount <= 0) return 0;
+  // Optimistic local grant for responsive gameplay
+  addGold(amount);
+  if (!currentUser) return amount;
+  try {
+    const ref = db.collection('gameStats').doc('goldSupply');
+    let granted = amount;
+    await db.runTransaction(async t => {
+      const doc = await t.get(ref);
+      const current = doc.exists ? (doc.data().totalMinted || 0) : 0;
+      const remaining = Math.max(0, MAX_GOLD - current);
+      granted = Math.min(amount, remaining);
+      if (granted > 0) {
+        t.set(ref, { totalMinted: current + granted }, { merge: true });
+      }
+    });
+    // If global supply was exhausted, claw back the excess we optimistically granted
+    if (granted < amount) {
+      const excess = amount - granted;
+      addGold(-excess);
+      if (granted === 0) {
+        print(`No more gold can be minted (global supply exhausted).`);
+      } else {
+        print(`Mint limit reached — only ${fmtGold(granted)} of ${fmtGold(amount)} gold created.`);
+      }
+    }
+    return granted;
+  } catch(e) {
+    /* best-effort; local grant already happened */
+    return amount;
+  }
+}
+
+// Move already-circulating gold into shared pools (does NOT mint new gold)
+async function contributeToPool(poolField, amount) {
+  if (!amount || amount <= 0 || !currentUser) return;
   try {
     const ref = db.collection('gameStats').doc('goldSupply');
     await db.runTransaction(async t => {
       const doc = await t.get(ref);
-      const current = doc.exists ? (doc.data().totalMinted || 0) : 0;
-      const newTotal = Math.min(MAX_GOLD, current + amount);
-      t.set(ref, { totalMinted: newTotal }, { merge: true });
+      const data = doc.exists ? doc.data() : {};
+      const current = data[poolField] || 0;
+      t.set(ref, { [poolField]: current + amount }, { merge: true });
     });
-  } catch(e) { /* best-effort global sync; local grant already happened */ }
+  } catch(e) { /* best-effort */ }
 }
 
 // Achievements definitions
@@ -1000,7 +1043,7 @@ function rest() {
   addGold(-(20));
   state.stamina = Math.min(state.maxStamina, state.stamina + 15);
   state.hp = Math.min(state.maxhp + getEquippedStats().maxhp, state.hp + 5);
-  print(`You rest.`); sfxRest();
+  print(`You rest. (20g burned)`); sfxRest();
   startCooldown(60);
   render();
 }
@@ -1170,14 +1213,20 @@ function buyItem(itemId) {
   }
   if (state.gold < item.price) { print("Not enough gold."); return; }
   addGold(-(item.price));
+
   if (item.type==='consumable') {
+    // Consumables = 100% gold sink (burned)
     if (item.id==='potion_hp') state.hp = Math.min(state.maxhp+getEquippedStats().maxhp, state.hp+25);
     else if (item.id==='potion_sta') state.stamina = Math.min(state.maxStamina, state.stamina+30);
-    print(`Used ${item.name}.`);
+    print(`Used ${item.name}. (${fmtGold(item.price)}g burned)`);
   } else {
+    // Equipment: 30% → Shop Treasury, 70% burned
+    const toTreasury = Math.floor(item.price * SHOP_TREASURY_RATE);
+    const burned = item.price - toTreasury;
+    if (toTreasury > 0) contributeToPool('shopTreasury', toTreasury);
     state.ownedItems.push(itemId);
     if (item.slot && !state.equipped[item.slot]) state.equipped[item.slot] = itemId;
-    print(`Purchased ${item.name}.`);
+    print(`Purchased ${item.name}. (${fmtGold(burned)}g burned, ${fmtGold(toTreasury)}g → Shop Treasury)`);
   }
   sfxBuy();
   render();
@@ -1311,6 +1360,8 @@ async function buyListing(listingId) {
   try {
     const listingRef = db.collection('market_listings').doc(listingId);
     let bought = null;
+    let sellerPayout = 0;
+    let tax = 0;
     await db.runTransaction(async t => {
       const doc = await t.get(listingRef);
       if (!doc.exists) throw new Error('That listing is no longer available.');
@@ -1318,10 +1369,13 @@ async function buyListing(listingId) {
       if (data.sellerUid === currentUser.uid) throw new Error("You can't buy your own listing.");
       if (state.gold < data.price) throw new Error('Not enough gold.');
       t.delete(listingRef);
+      tax = Math.floor(data.price * MARKET_TAX_RATE);
+      sellerPayout = data.price - tax;
       const payoutRef = db.collection('market_payouts').doc();
       t.set(payoutRef, {
         sellerUid: data.sellerUid,
-        amount: data.price,
+        amount: sellerPayout,
+        tax: tax,
         itemName: data.itemName,
         buyerName: state.username,
         timestamp: new Date().toISOString(),
@@ -1332,7 +1386,9 @@ async function buyListing(listingId) {
     if (bought) {
       addGold(-(bought.price));
       state.ownedItems.push(bought.itemId);
-      print(`Bought ${bought.itemName} for ${fmtGold(bought.price)} gold from ${bought.sellerName}.`);
+      if (tax > 0) contributeToPool('globalPool', tax);
+      print(`Bought ${bought.itemName} for ${fmtGold(bought.price)}g from ${bought.sellerName}.` +
+            (tax > 0 ? ` (${fmtGold(tax)}g tax → Global Pool)` : ''));
       render();
       refreshMarket();
     }
@@ -1386,7 +1442,10 @@ async function refreshGoldSupply() {
   box.innerHTML = 'Loading supply data...';
   try {
     const supplyDoc = await db.collection('gameStats').doc('goldSupply').get();
-    const totalMinted = supplyDoc.exists ? (supplyDoc.data().totalMinted || 0) : 0;
+    const data = supplyDoc.exists ? supplyDoc.data() : {};
+    const totalMinted = data.totalMinted || 0;
+    const shopTreasury = data.shopTreasury || 0;
+    const globalPool = data.globalPool || 0;
     const pctMinted = ((totalMinted / MAX_GOLD) * 100).toFixed(6);
     const remaining = Math.max(0, MAX_GOLD - totalMinted);
 
@@ -1411,14 +1470,35 @@ async function refreshGoldSupply() {
     }
     const yourPctOfSupply = totalMinted > 0 ? (((state.gold||0) / totalMinted) * 100).toFixed(4) : '0';
 
+    // Guild bank (if in a guild)
+    let guildTreasuryHtml = '';
+    if (state.guildId) {
+      try {
+        const gDoc = await db.collection('guilds').doc(state.guildId).get();
+        if (gDoc.exists) {
+          const g = gDoc.data();
+          guildTreasuryHtml = `<div><b>Your Guild Bank:</b> ${fmtGold(g.treasury || 0)} gold <span style="color:#7d8590;">(${esc(g.name)})</span></div>`;
+        }
+      } catch(e) {}
+    }
+
     box.innerHTML = `
       <div><b>Max Supply (fixed, game-wide):</b> ${fmtGold(MAX_GOLD)} gold</div>
       <div><b>Total Minted So Far:</b> ${fmtGold(totalMinted)} gold <span style="color:#7d8590;">(${pctMinted}% of max)</span></div>
       <div><b>Remaining Mintable:</b> ${fmtGold(remaining)} gold</div>
       <div style="margin-top:6px;"><b>Circulating (held by known players):</b> ${fmtGold(circulating)} gold <span style="color:#7d8590;">(${players} player${players===1?'':'s'} tracked)</span></div>
       <div><b>Richest Known Holder:</b> ${esc(richest.name)} — ${fmtGold(richest.gold)} gold</div>
+      <div style="margin-top:8px; border-top:1px solid #21262d; padding-top:8px;">
+        <div style="color:#e3b341; margin-bottom:4px;">🏦 Shared Pools</div>
+        <div><b>Shop Treasury:</b> ${fmtGold(shopTreasury)} gold <span style="color:#7d8590;">(30% of equipment buys)</span></div>
+        <div><b>Global Pool:</b> ${fmtGold(globalPool)} gold <span style="color:#7d8590;">(5% market tax)</span></div>
+        ${guildTreasuryHtml}
+      </div>
       <div style="margin-top:6px; border-top:1px solid #21262d; padding-top:6px;">
         <b>Your Holdings:</b> ${fmtGold(state.gold)} gold (${yourPctOfSupply}% of total minted)
+      </div>
+      <div style="margin-top:6px; font-size:11px; color:#7d8590;">
+        Sinks: potions/rest/PvP fee = 100% burned · equipment = 70% burned + 30% Shop Treasury · market = 5% Global Pool
       </div>`;
   } catch(e) { box.innerHTML = 'Error loading supply data.'; }
 }
