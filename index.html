@@ -1227,8 +1227,23 @@ function renderMysteryMerchant() {
     return;
   }
   box.style.display = 'block';
-  const items = [...SHOP_ITEMS.slice(2), ...FEATURED_ITEMS].sort(()=>Math.random()-0.5).slice(0,3);
-  const discounted = items.map(item => ({
+  // Seeded by the event window so the offer stays stable until the event
+  // actually rotates, instead of re-rolling on every render() (which fires
+  // every few seconds from the regen tick and could swap items out from
+  // under a player mid-purchase decision).
+  const seed = Math.floor(eventEndTime / 1000) || 0;
+  let s = seed;
+  function seededRandom() {
+    s = (s * 9301 + 49297) % 233280;
+    return s / 233280;
+  }
+  const pool = [...SHOP_ITEMS.slice(2), ...FEATURED_ITEMS];
+  const shuffled = pool
+    .map(item => ({ item, sortKey: seededRandom() }))
+    .sort((a,b) => a.sortKey - b.sortKey)
+    .map(x => x.item)
+    .slice(0, 3);
+  const discounted = shuffled.map(item => ({
     ...item,
     price: Math.floor(item.price * 0.7)
   }));
@@ -1762,9 +1777,21 @@ function renderDungeon() {
       <button class="action-btn" onclick="fightDungeonBoss()">Fight Boss</button>`;
   }
 }
+// Shared guard: resets the daily dungeon attempt if the date has rolled
+// over since it was last checked. Every dungeon action calls this first
+// so a run started right before midnight can't be continued into a new day.
+function ensureDungeonDay() {
+  if (!state) return;
+  const today = todayKey();
+  if (state.dungeonDate !== today) {
+    state.dungeonDate = today;
+    state.dungeonProgress = 0;
+    state.dungeonRetreated = false;
+  }
+}
 function startDungeon() {
   if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
-  if (state.dungeonDate !== todayKey()) { state.dungeonDate = todayKey(); state.dungeonProgress = 0; }
+  ensureDungeonDay();
   if (state.dungeonProgress !== 0) { print("You already attempted the dungeon today."); return; }
   if (!useStamina(30)) return;
   state.dungeonProgress = 1;
@@ -1774,7 +1801,8 @@ function startDungeon() {
 }
 function fightDungeonWave() {
   if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
-  if (state.dungeonProgress < 1 || state.dungeonProgress > 3) return;
+  ensureDungeonDay();
+  if (state.dungeonProgress < 1 || state.dungeonProgress > 3) { print("No active dungeon run today."); render(); return; }
   const wave = state.dungeonProgress;
   const monster = {
     name: `Dungeon Guardian ${wave}`,
@@ -1817,6 +1845,7 @@ function fightDungeonWave() {
 }
 function retreatDungeon() {
   if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
+  ensureDungeonDay();
   state.dungeonProgress = 0;
   state.dungeonRetreated = true;
   print("You retreat from the dungeon, keeping your earned loot.");
@@ -1825,7 +1854,8 @@ function retreatDungeon() {
 }
 function fightDungeonBoss() {
   if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
-  if (state.dungeonProgress !== 4) return;
+  ensureDungeonDay();
+  if (state.dungeonProgress !== 4) { print("No boss waiting today."); render(); return; }
   const boss = {
     name: 'Dungeon Overlord',
     hp: 50 + state.level * 10,
@@ -2082,14 +2112,22 @@ async function contributeToGuild() {
 async function contributeToGuildQuest() {
   if (!state.guildId) return;
   const guildRef = db.collection('guilds').doc(state.guildId);
-  const guildDoc = await guildRef.get();
-  if (!guildDoc.exists) return;
-  const guild = guildDoc.data();
-  if (guild.weeklyQuestDate !== todayKey()) {
-    await guildRef.update({ weeklyQuestProgress: 1, weeklyQuestDate: todayKey(), weeklyQuestClaimed: false });
-  } else {
-    await guildRef.update({ weeklyQuestProgress: firebase.firestore.FieldValue.increment(1) });
-  }
+  try {
+    // Transaction guards against two members' kills racing on the same
+    // read-then-write and one of the increments getting silently dropped
+    // (or the "new day" branch firing twice and resetting progress a
+    // second member just contributed to).
+    await db.runTransaction(async t => {
+      const doc = await t.get(guildRef);
+      if (!doc.exists) return;
+      const guild = doc.data();
+      if (guild.weeklyQuestDate !== todayKey()) {
+        t.update(guildRef, { weeklyQuestProgress: 1, weeklyQuestDate: todayKey(), weeklyQuestClaimed: false });
+      } else {
+        t.update(guildRef, { weeklyQuestProgress: (guild.weeklyQuestProgress || 0) + 1 });
+      }
+    });
+  } catch(e) { /* best-effort */ }
 }
 
 async function claimGuildQuest() {
@@ -2115,13 +2153,25 @@ async function declareWarPrompt() {
   const snapshot = await db.collection('guilds').where('name','==',targetName).get();
   if (snapshot.empty) { print('Guild not found.'); return; }
   const targetDoc = snapshot.docs[0];
-  const targetGuild = targetDoc.data();
   const guildRef = db.collection('guilds').doc(state.guildId);
-  const guildDoc = await guildRef.get();
-  const guild = guildDoc.data();
-  if (guild.treasury < 200) { print('Guild treasury needs 200 gold.'); return; }
-  await guildRef.update({ treasury: firebase.firestore.FieldValue.increment(-200) });
-  print(`War declared on ${targetGuild.name}! Resolving in 5 minutes...`);
+  // Transaction: read treasury and deduct the 200g war cost atomically so
+  // two near-simultaneous war declarations (or a declaration racing a
+  // donation) can't both pass the >=200 check against a stale balance.
+  let targetGuildName = null;
+  try {
+    await db.runTransaction(async t => {
+      const guildDoc = await t.get(guildRef);
+      if (!guildDoc.exists) throw new Error('Guild not found.');
+      const guild = guildDoc.data();
+      if ((guild.treasury || 0) < 200) throw new Error('Guild treasury needs 200 gold.');
+      targetGuildName = targetDoc.data().name;
+      t.update(guildRef, { treasury: firebase.firestore.FieldValue.increment(-200) });
+    });
+  } catch(e) {
+    print(e.message || 'Failed to declare war.');
+    return;
+  }
+  print(`War declared on ${targetGuildName}! Resolving in 5 minutes...`);
   setTimeout(async () => {
     // Resolve war
     const gDoc = await guildRef.get();
@@ -2142,18 +2192,40 @@ async function declareWarPrompt() {
 }
 
 async function leaveGuild() {
-  if (!state.guildId) return;
+  if (!state.guildId || !currentUser) return;
+  const guildRef = db.collection('guilds').doc(state.guildId);
   try {
-    await db.collection('guilds').doc(state.guildId).update({
-      members: firebase.firestore.FieldValue.arrayRemove({
-        uid: currentUser.uid, username: state.username, avatar: state.avatar, level: state.level || 1
-      })
+    // FIX: arrayRemove() requires an exact object match against what's
+    // stored — since `level` (and potentially avatar/username) can drift
+    // after joining, the old arrayRemove({uid, username, avatar, level})
+    // call would silently no-op and leave the player stuck as a ghost
+    // member forever. Instead, read the guild, filter the member out by
+    // uid, and overwrite the array directly (inside a transaction so a
+    // concurrent join/leave can't clobber it).
+    let leftName = null;
+    await db.runTransaction(async t => {
+      const doc = await t.get(guildRef);
+      if (!doc.exists) return;
+      const guild = doc.data();
+      const newMembers = (guild.members || []).filter(m => m.uid !== currentUser.uid);
+      leftName = guild.name;
+      if (newMembers.length === 0) {
+        // Last member leaving — remove the now-empty guild entirely.
+        t.delete(guildRef);
+      } else {
+        // If the leader is leaving, hand leadership to the next member.
+        const update = { members: newMembers };
+        if (guild.leaderUid === currentUser.uid) {
+          update.leaderUid = newMembers[0].uid;
+        }
+        t.update(guildRef, update);
+      }
     });
-  } catch(e) { /* still clear local */ }
+    if (leftName) print(`Left ${leftName}. Guild bonuses removed.`);
+  } catch(e) { /* still clear local so the player isn't stuck */ }
   state.guildId = null;
   cachedGuildTreasury = 0;
   cachedGuildName = null;
-  print('Left guild. Guild bonuses removed.');
   render();
 }
 
