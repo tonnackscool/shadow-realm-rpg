@@ -230,10 +230,15 @@
     <div id="wallet-status">Wallet not connected</div>
     <div class="btnrow">
       <button id="connectBtn" onclick="connectWallet()">Connect Phantom Wallet</button>
-      <button id="redeemBtn" onclick="redeemGold()" disabled>Redeem Gold for TRI</button>
       <button id="disconnectBtn" onclick="disconnectWallet()" style="display:none;">Disconnect Wallet</button>
     </div>
-    <div style="color:#7d8590;font-size:12px;">Rate: 100 gold = 1 TRI</div>
+    <div class="setting-row">
+      <label>Gold to convert:</label>
+      <input id="redeem-gold-amount" type="number" min="100" step="100" placeholder="e.g. 500" style="width:150px;background:#0b0d10;border:1px solid #30363d;color:#c9d1d9;padding:4px;">
+      <button id="redeemBtn" onclick="redeemGold()" disabled>Redeem for TRI</button>
+      <button id="redeemMaxBtn" onclick="fillMaxRedeemable()" disabled>Max</button>
+    </div>
+    <div style="color:#7d8590;font-size:12px;">Rate: 100 gold = 1 TRI · must be a multiple of 100</div>
   </div>
 
   <!-- Current Event -->
@@ -1071,13 +1076,21 @@ function updateWalletUI() {
     document.getElementById('wallet-status').textContent = `Connected: ${walletPubkey.slice(0,4)}...${walletPubkey.slice(-4)}`;
     document.getElementById('connectBtn').disabled = true;
     document.getElementById('redeemBtn').disabled = false;
+    document.getElementById('redeemMaxBtn').disabled = false;
     document.getElementById('disconnectBtn').style.display = 'inline-block';
   } else {
     document.getElementById('wallet-status').textContent = 'Wallet not connected';
     document.getElementById('connectBtn').disabled = false;
     document.getElementById('redeemBtn').disabled = true;
+    document.getElementById('redeemMaxBtn').disabled = true;
     document.getElementById('disconnectBtn').style.display = 'none';
   }
+}
+function fillMaxRedeemable() {
+  if (!state) return;
+  const TRI_RATE = 100;
+  const maxRedeemable = Math.floor((state.gold || 0) / TRI_RATE) * TRI_RATE;
+  document.getElementById('redeem-gold-amount').value = maxRedeemable;
 }
 async function tryAutoConnect() {
   const provider = getPhantomProvider();
@@ -1096,18 +1109,29 @@ async function redeemGold() {
   // be trusted directly for payouts.
   if (!walletPubkey || !currentUser) return;
   const TRI_RATE = 100;
-  if (state.gold < TRI_RATE) { print(`Need ${TRI_RATE} gold.`); return; }
-  const amount = Math.floor(state.gold / TRI_RATE);
-  addGold(-(amount * TRI_RATE));
+
+  const input = document.getElementById('redeem-gold-amount');
+  const raw = Number(input.value);
+
+  if (!raw || raw <= 0) { print(`Enter how much gold to convert.`); return; }
+  if (!Number.isInteger(raw)) { print(`Gold amount must be a whole number.`); return; }
+  if (raw % TRI_RATE !== 0) { print(`Gold amount must be a multiple of ${TRI_RATE}.`); return; }
+  if (raw > state.gold) { print(`You only have ${fmtGold(state.gold)} gold.`); return; }
+
+  const goldToSpend = raw;
+  const amount = goldToSpend / TRI_RATE;
+
+  addGold(-goldToSpend);
   try {
     await db.collection('tri_redemptions').add({
       uid: currentUser.uid, wallet: walletPubkey,
-      triAmount: amount, goldSpent: amount*TRI_RATE,
+      triAmount: amount, goldSpent: goldToSpend,
       timestamp: new Date().toISOString(), status:"pending"
     });
-    print(`Redeemed ${amount*TRI_RATE} gold for ${amount} TRI.`);
+    print(`Redeemed ${fmtGold(goldToSpend)} gold for ${amount} TRI.`);
+    input.value = '';
   } catch(e) {
-    addGold(amount*TRI_RATE);
+    addGold(goldToSpend);
     print("Redemption failed.");
   }
   render();
