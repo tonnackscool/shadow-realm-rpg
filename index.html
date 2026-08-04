@@ -791,6 +791,7 @@ auth.onAuthStateChanged(async user => {
       refreshArena();
       refreshMarket();
       refreshGoldSupply();
+      reconcileRejectedRedemptions();
     } else {
       document.getElementById('hero-select').style.display = 'block';
       renderHeroSelect();
@@ -1110,6 +1111,42 @@ async function redeemGold() {
     print("Redemption failed.");
   }
   render();
+}
+
+// ========== REDEMPTION RECONCILIATION ==========
+// Safety net for when the payout script rejects a redemption for
+// insufficient gold (see redeemGold()): the client deducts gold at
+// click-time, but a rejection with no local `refunded` flag means that
+// gold never made it to TRI and was never given back. This scans for
+// exactly that case and credits the player automatically.
+//
+// Uses a separate `clientRefunded` flag (rather than trusting only the
+// script's own `refunded` field) so it correctly catches old rejected docs
+// that predate the payout-script patch, without ever double-crediting a
+// request the script itself already refunded.
+async function reconcileRejectedRedemptions() {
+  if (!currentUser || !state) return;
+  try {
+    const snap = await db.collection('tri_redemptions')
+      .where('uid', '==', currentUser.uid)
+      .where('status', '==', 'rejected')
+      .get();
+    let totalRefunded = 0;
+    const batchUpdates = [];
+    snap.forEach(doc => {
+      const data = doc.data();
+      if (!data.refunded && !data.clientRefunded && data.goldSpent > 0) {
+        totalRefunded += data.goldSpent;
+        batchUpdates.push(doc.ref.update({ clientRefunded: true }));
+      }
+    });
+    if (totalRefunded > 0) {
+      addGold(totalRefunded);
+      await Promise.all(batchUpdates);
+      print(`Recovered ${fmtGold(totalRefunded)} gold from ${batchUpdates.length} rejected redemption(s) that were never refunded.`);
+      render();
+    }
+  } catch (e) { /* best-effort, don't block login on this */ }
 }
 
 // ========== TRAINING & REST ==========
