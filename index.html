@@ -228,9 +228,13 @@
   <!-- Wallet -->
   <div class="panel">
     <div id="wallet-status">Wallet not connected</div>
-    <div class="btnrow">
-      <button id="connectBtn" onclick="connectWallet()">Connect Phantom Wallet</button>
+    <div class="btnrow" id="wallet-connect-row">
+      <button id="connectBtn" onclick="openWalletPicker()">Connect Wallet</button>
       <button id="disconnectBtn" onclick="disconnectWallet()" style="display:none;">Disconnect Wallet</button>
+    </div>
+    <div id="wallet-picker" class="panel" style="display:none;margin-top:8px;">
+      <div style="color:#7d8590;font-size:12px;margin-bottom:6px;">Choose a wallet:</div>
+      <div id="wallet-picker-list" class="btnrow"></div>
     </div>
     <div class="setting-row">
       <label>Gold to convert:</label>
@@ -1049,31 +1053,145 @@ function loadSettings() {
   ambushesEnabled = ambushVal === 'on';
 }
 
-// ========== WALLET ==========
-function getPhantomProvider() {
-  if (window.phantom?.solana?.isPhantom) return window.phantom.solana;
-  if (window.solana?.isPhantom) return window.solana;
-  return null;
+// ========== WALLET (multi-wallet via Wallet Standard + legacy fallbacks) ==========
+// Modern Solana-capable wallets (Phantom, Solflare, Backpack, and MetaMask's
+// newer Solana support) announce themselves to the page via the "Wallet
+// Standard" protocol instead of each needing a hardcoded window.* check.
+// We listen for that announcement, and ALSO fall back to the old
+// window.phantom.solana-style checks for anything that hasn't adopted it,
+// so nothing that used to work stops working.
+const detectedWallets = {}; // name -> adapter { name, connect, connectTrusted, disconnect }
+let activeWalletName = null;
+
+function registerWalletAdapter(adapter) {
+  if (!adapter || !adapter.name || detectedWallets[adapter.name]) return;
+  detectedWallets[adapter.name] = adapter;
+  renderWalletPickerList();
 }
-async function connectWallet() {
-  const provider = getPhantomProvider();
-  if (!provider) { alert("Phantom not found."); return; }
+
+function wrapStandardWallet(wallet) {
+  // Only care about wallets that support the Solana chain namespace.
+  const chains = wallet.chains || [];
+  if (!chains.some(c => c.startsWith('solana:'))) return null;
+  const connectFeature = wallet.features && wallet.features['standard:connect'];
+  const disconnectFeature = wallet.features && wallet.features['standard:disconnect'];
+  if (!connectFeature) return null;
+  return {
+    name: wallet.name,
+    connect: async () => {
+      const result = await connectFeature.connect();
+      const account = result.accounts && result.accounts[0];
+      if (!account) throw new Error('No account returned.');
+      return account.address;
+    },
+    connectTrusted: async () => {
+      const result = await connectFeature.connect({ silent: true });
+      const account = result.accounts && result.accounts[0];
+      return account ? account.address : null;
+    },
+    disconnect: async () => {
+      if (disconnectFeature) await disconnectFeature.disconnect();
+    }
+  };
+}
+
+function initWalletStandardDetection() {
+  function onWalletAnnounced(wallet) {
+    const adapter = wrapStandardWallet(wallet);
+    if (adapter) registerWalletAdapter(adapter);
+  }
+  // Ask already-loaded wallets to announce themselves.
   try {
-    const resp = await provider.connect();
-    walletPubkey = resp.publicKey.toString();
-    updateWalletUI();
-  } catch(e) { print("Wallet connection failed."); }
+    window.dispatchEvent(new CustomEvent('wallet-standard:app-ready', {
+      detail: Object.freeze({ register: (...wallets) => wallets.forEach(onWalletAnnounced) })
+    }));
+  } catch(e) {}
+  // Listen for wallets that announce themselves after this point.
+  window.addEventListener('wallet-standard:register-wallet', (event) => {
+    try { event.detail.register((...wallets) => wallets.forEach(onWalletAnnounced)); } catch(e) {}
+  });
 }
+
+function wrapLegacyProvider(provider, name) {
+  return {
+    name,
+    connect: async () => {
+      const resp = await provider.connect();
+      return resp.publicKey.toString();
+    },
+    connectTrusted: async () => {
+      const resp = await provider.connect({ onlyIfTrusted: true });
+      return resp.publicKey.toString();
+    },
+    disconnect: async () => {
+      if (provider.disconnect) await provider.disconnect();
+    }
+  };
+}
+
+function detectLegacyWallets() {
+  // Only added as a fallback if Wallet Standard registration didn't
+  // already pick these up under the same name.
+  if (window.phantom?.solana?.isPhantom && !detectedWallets['Phantom']) {
+    registerWalletAdapter(wrapLegacyProvider(window.phantom.solana, 'Phantom'));
+  }
+  if (window.solflare?.isSolflare && !detectedWallets['Solflare']) {
+    registerWalletAdapter(wrapLegacyProvider(window.solflare, 'Solflare'));
+  }
+  if (window.backpack?.isBackpack && !detectedWallets['Backpack']) {
+    registerWalletAdapter(wrapLegacyProvider(window.backpack, 'Backpack'));
+  }
+}
+
+function openWalletPicker() {
+  detectLegacyWallets(); // re-check in case extensions loaded late
+  const names = Object.keys(detectedWallets);
+  const panel = document.getElementById('wallet-picker');
+  if (names.length === 0) {
+    print('No Solana-compatible wallet detected. Install Phantom, Solflare, or MetaMask (with Solana enabled).');
+    return;
+  }
+  renderWalletPickerList();
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
+
+function renderWalletPickerList() {
+  const list = document.getElementById('wallet-picker-list');
+  if (!list) return;
+  const names = Object.keys(detectedWallets);
+  list.innerHTML = names.map(name =>
+    `<button onclick="connectSpecificWallet('${name}')">${esc(name)}</button>`
+  ).join('') || '<span style="color:#7d8590;">No wallets detected yet.</span>';
+}
+
+async function connectSpecificWallet(name) {
+  const adapter = detectedWallets[name];
+  if (!adapter) return;
+  try {
+    const address = await adapter.connect();
+    walletPubkey = address;
+    activeWalletName = name;
+    localStorage.setItem('shadowrealm_last_wallet', name);
+    document.getElementById('wallet-picker').style.display = 'none';
+    updateWalletUI();
+    print(`Connected ${name}.`);
+  } catch(e) {
+    print(`${name} connection failed.`);
+  }
+}
+
 async function disconnectWallet() {
-  const provider = getPhantomProvider();
-  try { if (provider?.disconnect) await provider.disconnect(); } catch(e){}
+  const adapter = activeWalletName ? detectedWallets[activeWalletName] : null;
+  try { if (adapter?.disconnect) await adapter.disconnect(); } catch(e){}
   walletPubkey = null;
-  localStorage.removeItem('shadowrealm_wallet');
+  activeWalletName = null;
+  localStorage.removeItem('shadowrealm_last_wallet');
   updateWalletUI();
 }
 function updateWalletUI() {
   if (walletPubkey) {
-    document.getElementById('wallet-status').textContent = `Connected: ${walletPubkey.slice(0,4)}...${walletPubkey.slice(-4)}`;
+    document.getElementById('wallet-status').textContent =
+      `Connected (${activeWalletName}): ${walletPubkey.slice(0,4)}...${walletPubkey.slice(-4)}`;
     document.getElementById('connectBtn').disabled = true;
     document.getElementById('redeemBtn').disabled = false;
     document.getElementById('redeemMaxBtn').disabled = false;
@@ -1093,15 +1211,19 @@ function fillMaxRedeemable() {
   document.getElementById('redeem-gold-amount').value = maxRedeemable;
 }
 async function tryAutoConnect() {
-  const provider = getPhantomProvider();
-  if (provider) {
-    try {
-      const resp = await provider.connect({ onlyIfTrusted: true });
-      walletPubkey = resp.publicKey.toString();
+  detectLegacyWallets();
+  const lastWallet = localStorage.getItem('shadowrealm_last_wallet');
+  if (!lastWallet || !detectedWallets[lastWallet]) return;
+  try {
+    const address = await detectedWallets[lastWallet].connectTrusted();
+    if (address) {
+      walletPubkey = address;
+      activeWalletName = lastWallet;
       updateWalletUI();
-    } catch(e){}
-  }
+    }
+  } catch(e) {}
 }
+initWalletStandardDetection();
 async function redeemGold() {
   // NOTE: This writes a "pending" redemption request that must be validated
   // and approved server-side (e.g. Cloud Function + Firestore security rules)
