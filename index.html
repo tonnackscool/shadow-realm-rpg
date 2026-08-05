@@ -543,6 +543,22 @@ async function contributeToPool(poolField, amount) {
   } catch(e) { /* best-effort */ }
 }
 
+// Tracks gold permanently destroyed (potions, rest, equipment's burned
+// portion, PvP fees/losses) — separate from totalMinted so players can
+// verify the "burned" claims shown in the Gold Economy panel instead of
+// just taking them on faith.
+async function burnGold(amount) {
+  if (!amount || amount <= 0 || !currentUser) return;
+  try {
+    const ref = db.collection('gameStats').doc('goldSupply');
+    await db.runTransaction(async t => {
+      const doc = await t.get(ref);
+      const current = doc.exists ? (doc.data().totalBurned || 0) : 0;
+      t.set(ref, { totalBurned: current + amount }, { merge: true });
+    });
+  } catch(e) { /* best-effort */ }
+}
+
 // Achievements definitions
 const ACHIEVEMENTS = [
   { id:'kills10', name:'Hunter', desc:'Kill 10 enemies', check: s => s.kills >= 10, reward: {gold:50, xp:20} },
@@ -1251,6 +1267,7 @@ async function redeemGold() {
       timestamp: new Date().toISOString(), status:"pending"
     });
     print(`Redeemed ${fmtGold(goldToSpend)} gold for ${amount} TRI.`);
+    burnGold(goldToSpend);
     input.value = '';
   } catch(e) {
     addGold(goldToSpend);
@@ -1314,6 +1331,7 @@ function rest() {
   addGold(-(cost));
   state.stamina = Math.min(state.maxStamina, state.stamina + 15);
   state.hp = Math.min(state.maxhp + getEquippedStats().maxhp, state.hp + 5);
+  burnGold(cost);
   const note = cost < 20 ? ` (guild discount: ${cost}g burned)` : ` (${cost}g burned)`;
   print(`You rest.${note}`); sfxRest();
   startCooldown(60);
@@ -1546,12 +1564,14 @@ function buyItem(itemId) {
     // Consumables = 100% gold sink (burned)
     if (item.id==='potion_hp') state.hp = Math.min(state.maxhp+getEquippedStats().maxhp, state.hp+25);
     else if (item.id==='potion_sta') state.stamina = Math.min(state.maxStamina, state.stamina+30);
+    burnGold(item.price);
     print(`Used ${item.name}. (${fmtGold(item.price)}g burned)`);
   } else {
     // Equipment: 30% → Shop Treasury, 70% burned
     const toTreasury = Math.floor(item.price * SHOP_TREASURY_RATE);
     const burned = item.price - toTreasury;
     if (toTreasury > 0) contributeToPool('shopTreasury', toTreasury);
+    if (burned > 0) burnGold(burned);
     state.ownedItems.push(itemId);
     if (item.slot && !state.equipped[item.slot]) state.equipped[item.slot] = itemId;
     print(`Purchased ${item.name}. (${fmtGold(burned)}g burned, ${fmtGold(toTreasury)}g → Shop Treasury)`);
@@ -1772,6 +1792,7 @@ async function refreshGoldSupply() {
     const supplyDoc = await db.collection('gameStats').doc('goldSupply').get();
     const data = supplyDoc.exists ? supplyDoc.data() : {};
     const totalMinted = data.totalMinted || 0;
+    const totalBurned = data.totalBurned || 0;
     const shopTreasury = data.shopTreasury || 0;
     const globalPool = data.globalPool || 0;
     const pctMinted = ((totalMinted / MAX_GOLD) * 100).toFixed(6);
@@ -1814,6 +1835,8 @@ async function refreshGoldSupply() {
       <div><b>Max Supply (fixed, game-wide):</b> ${fmtGold(MAX_GOLD)} gold</div>
       <div><b>Total Minted So Far:</b> ${fmtGold(totalMinted)} gold <span style="color:#7d8590;">(${pctMinted}% of max)</span></div>
       <div><b>Remaining Mintable:</b> ${fmtGold(remaining)} gold</div>
+      <div><b>Total Burned So Far:</b> ${fmtGold(totalBurned)} gold <span style="color:#7d8590;">(potions, rest, PvP, equipment-burn portion)</span></div>
+      <div><b>Net In Circulation (minted − burned):</b> ${fmtGold(Math.max(0, totalMinted - totalBurned))} gold</div>
       <div style="margin-top:6px;"><b>Circulating (held by known players):</b> ${fmtGold(circulating)} gold <span style="color:#7d8590;">(${players} player${players===1?'':'s'} tracked)</span></div>
       <div><b>Richest Known Holder:</b> ${esc(richest.name)} — ${fmtGold(richest.gold)} gold</div>
       <div style="margin-top:8px; border-top:1px solid #21262d; padding-top:8px;">
@@ -2560,7 +2583,7 @@ function fightPlayer(index) {
   const opp = arenaRecords[index];
   if (!opp || !state) return;
   if (state.stamina < 15 || state.gold < 10) { print("Need 15 STA and 10 gold."); return; }
-  state.stamina -= 15; addGold(-(10));
+  state.stamina -= 15; addGold(-(10)); burnGold(10);
   initAudio();
   const oppName = getOpponentDisplay(opp);
   print(`Duel vs ${opp.heroDisplay || opp.username || opp.name || 'Unknown'}!`);
@@ -2575,7 +2598,9 @@ function fightPlayer(index) {
   }
   if (myHp<=0) {
     state.hp = Math.max(1, Math.floor((state.maxhp+eq.maxhp)*0.2));
-    addGold(-(Math.min(state.gold, 10+Math.floor(Math.random()*15))));
+    const lossAmt = Math.min(state.gold, 10+Math.floor(Math.random()*15));
+    addGold(-lossAmt);
+    burnGold(lossAmt);
     state.xp -= Math.min(state.xp, Math.floor(state.xp*0.15));
     print(`Defeated.`); sfxDefeat();
     logBattle(opp, 'loss');
@@ -2723,7 +2748,9 @@ function aiAmbush() {
   }
   if (myHp<=0) {
     state.hp = Math.max(1, Math.floor((state.maxhp+eq.maxhp)*0.25));
-    addGold(-(Math.min(state.gold, 5+Math.floor(Math.random()*15))));
+    const lossAmt = Math.min(state.gold, 5+Math.floor(Math.random()*15));
+    addGold(-lossAmt);
+    burnGold(lossAmt);
     print("You were overwhelmed."); sfxDefeat();
     logBattle(bot, 'win', true);
   } else {
