@@ -468,9 +468,14 @@ function migrateEquipped(eq) {
 }
 
 // ---------- Gold cap / money management ----------
-const MAX_GOLD = 21000000000; // 21 billion gold hard cap per player
+const MAX_GOLD = 21000000000; // 21 billion gold hard cap (game-wide + per player)
 const SHOP_TREASURY_RATE = 0.30; // 30% of equipment purchases go to shop treasury
 const MARKET_TAX_RATE = 0.05;    // 5% of player-market sales go to global pool
+
+// ---------- Wealth tax (auto every 7 days) ----------
+const WEALTH_TAX_THRESHOLD = 50000;  // gold above this is considered "big balance"
+const WEALTH_TAX_RATE = 0.30;        // 30% tax
+const WEALTH_TAX_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 function addGold(amount) {
   if (!state) return;
@@ -484,15 +489,75 @@ function fmtGold(n) {
   return (n || 0).toLocaleString();
 }
 
+/**
+ * Auto wealth tax – runs for the current player once every 7 days.
+ * If gold >= WEALTH_TAX_THRESHOLD, take 30% and split it equally among ALL guilds.
+ */
+async function maybeApplyWealthTax() {
+  if (!state || !currentUser) return;
+  const now = Date.now();
+  const last = state.lastWealthTaxAt || 0;
+  if (now - last < WEALTH_TAX_INTERVAL_MS) return;
+
+  const gold = state.gold || 0;
+  if (gold < WEALTH_TAX_THRESHOLD) {
+    state.lastWealthTaxAt = now;
+    save();
+    return;
+  }
+
+  const tax = Math.floor(gold * WEALTH_TAX_RATE);
+  if (tax <= 0) {
+    state.lastWealthTaxAt = now;
+    save();
+    return;
+  }
+
+  addGold(-tax);
+  state.lastWealthTaxAt = now;
+
+  try {
+    const snap = await db.collection('guilds').get();
+    const guilds = [];
+    snap.forEach(doc => guilds.push({ id: doc.id, ref: doc.ref }));
+    if (guilds.length === 0) {
+      burnGold(tax);
+      print(`💰 Wealth tax: ${fmtGold(tax)} gold collected (no guilds — burned).`);
+    } else {
+      const perGuild = Math.floor(tax / guilds.length);
+      const remainder = tax - (perGuild * guilds.length);
+      const batch = db.batch();
+      guilds.forEach((g, i) => {
+        const amount = perGuild + (i === 0 ? remainder : 0);
+        if (amount > 0) {
+          batch.update(g.ref, { treasury: firebase.firestore.FieldValue.increment(amount) });
+        }
+      });
+      await batch.commit();
+      print(`💰 Wealth tax (every 7 days): ${fmtGold(tax)} gold taken (30%). Split among ${guilds.length} guild(s) → ${fmtGold(perGuild)} each.`);
+    }
+  } catch (e) {
+    burnGold(tax);
+    print(`💰 Wealth tax: ${fmtGold(tax)} gold collected. (Guild distribution failed — burned.)`);
+  }
+  save();
+  render();
+}
+
 // ---------- Global gold supply (game-wide, like a crypto max supply) ----------
+// STRICT: transaction first, only grant what remaining supply allows.
 async function mintGold(amount) {
   if (!state || amount <= 0) return 0;
-  // Optimistic local grant for responsive gameplay
-  addGold(amount);
-  if (!currentUser) return amount;
+  if (!currentUser) {
+    const before = state.gold || 0;
+    const room = Math.max(0, MAX_GOLD - before);
+    const localGrant = Math.min(amount, room);
+    if (localGrant > 0) addGold(localGrant);
+    return localGrant;
+  }
   try {
     const ref = db.collection('gameStats').doc('goldSupply');
-    let granted = amount;
+    let granted = 0;
     await db.runTransaction(async t => {
       const doc = await t.get(ref);
       const current = doc.exists ? (doc.data().totalMinted || 0) : 0;
@@ -502,20 +567,18 @@ async function mintGold(amount) {
         t.set(ref, { totalMinted: current + granted }, { merge: true });
       }
     });
-    // If global supply was exhausted, claw back the excess we optimistically granted
+    if (granted > 0) addGold(granted);
     if (granted < amount) {
-      const excess = amount - granted;
-      addGold(-excess);
       if (granted === 0) {
-        print(`No more gold can be minted (global supply exhausted).`);
+        print(`No more gold can be minted (global supply exhausted at ${fmtGold(MAX_GOLD)}).`);
       } else {
         print(`Mint limit reached — only ${fmtGold(granted)} of ${fmtGold(amount)} gold created.`);
       }
     }
     return granted;
-  } catch(e) {
-    /* best-effort; local grant already happened */
-    return amount;
+  } catch (e) {
+    print('Mint failed (network/permission). No gold added.');
+    return 0;
   }
 }
 
@@ -845,7 +908,8 @@ function selectHero(id) {
     craftCount: 0,
     avatar: '⚔️', theme: '#e3b341',
     guildId: null,
-    dungeonDate: null, dungeonProgress: 0, dungeonRetreated: false
+    dungeonDate: null, dungeonProgress: 0, dungeonRetreated: false,
+    lastWealthTaxAt: 0
   };
   pendingUsername = null;
   document.getElementById('hero-select').style.display = 'none';
@@ -1030,9 +1094,15 @@ async function load() {
       if (!state.guildId) state.guildId = null;
       if (!state.dungeonDate) state.dungeonDate = null;
       if (!state.dungeonProgress) state.dungeonProgress = 0;
+      if (state.lastWealthTaxAt === undefined) state.lastWealthTaxAt = 0;
+      // Hard-clamp any legacy / inflated gold to the 21B max
+      if (typeof state.gold !== 'number' || state.gold < 0) state.gold = 0;
+      if (state.gold > MAX_GOLD) state.gold = MAX_GOLD;
       document.getElementById('hero-select').style.display = 'none';
       document.getElementById('game-ui').style.display = 'block';
       print("Welcome back.");
+      // Auto wealth tax every 7 days (30% if gold >= 50,000 → split equally to all guilds)
+      maybeApplyWealthTax();
       return true;
     }
   } catch(e) { print('Cloud load error.'); }
@@ -2109,6 +2179,7 @@ async function createGuild() {
   const trimmed = name.trim().slice(0, 24);
   if (!trimmed) { print('Invalid guild name.'); return; }
   addGold(-(500));
+  burnGold(500); // creation fee burned
   const guildRef = db.collection('guilds').doc();
   try {
     await guildRef.set({
@@ -2219,6 +2290,7 @@ async function joinGuild(guildId) {
     }
 
     addGold(-(100));
+    burnGold(100); // join fee burned
     await guildRef.update({
       members: firebase.firestore.FieldValue.arrayUnion({
         uid: currentUser.uid,
