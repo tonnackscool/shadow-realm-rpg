@@ -1426,6 +1426,20 @@ function getFeaturedItem() {
   const seed = d.getFullYear()*10000 + (d.getMonth()+1)*100 + d.getDate();
   return FEATURED_ITEMS[seed % FEATURED_ITEMS.length];
 }
+
+// Wealthy players (gold > 100k) pay 500% hike on potions → 6× base price
+const POTION_PRICE_HIKE_THRESHOLD = 100000;
+const POTION_PRICE_MULTIPLIER = 6; // 500% hike = 6× original price
+
+function getItemPrice(item) {
+  if (!item || !state) return item?.price || 0;
+  const isPotion = item.id === 'potion_hp' || item.id === 'potion_sta';
+  if (isPotion && (state.gold || 0) > POTION_PRICE_HIKE_THRESHOLD) {
+    return item.price * POTION_PRICE_MULTIPLIER;
+  }
+  return item.price;
+}
+
 function renderShop() {
   const box = document.getElementById('shop-box');
   if (!box || !state) return;
@@ -1435,14 +1449,20 @@ function renderShop() {
   const featuredHtml = `
     <div style="border:1px solid #e3b341;border-radius:6px;padding:10px;margin-bottom:10px;background:#1c1608;">
       <div style="color:#e3b341;">★ Featured: ${featured.name}</div>
-      <div>${featured.desc} (${featured.price}g)</div>
+      <div>${featured.desc} (${getItemPrice(featured)}g)</div>
       <button ${owned?'disabled':''} onclick="buyItem('${featured.id}')">${equipped?'Equipped':owned?'Owned':'Buy'}</button>
     </div>`;
   const regularHtml = SHOP_ITEMS.map(item => {
     const owned = state.ownedItems.includes(item.id);
     const equipped = Object.values(state.equipped).includes(item.id);
+    const price = getItemPrice(item);
+    const isPotion = item.id === 'potion_hp' || item.id === 'potion_sta';
+    const hiked = isPotion && price > item.price;
+    const priceLabel = hiked
+      ? `<span style="color:#f85149;">${price}g</span> <span style="color:#7d8590;font-size:11px;">(+500% wealth tax)</span>`
+      : `${price}g`;
     return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #21262d;">
-      <span><b>${item.name}</b> ${item.desc} (${item.price}g)</span>
+      <span><b>${item.name}</b> ${item.desc} (${priceLabel})</span>
       <button ${owned?'disabled':''} onclick="buyItem('${item.id}')">${equipped?'Equipped':owned?'Owned':'Buy'}</button>
     </div>`;
   }).join('');
@@ -1575,17 +1595,19 @@ function buyItem(itemId) {
   if (item.type==='equipment' && state.ownedItems.includes(itemId)) {
     print("Already owned."); return;
   }
-  if (state.gold < item.price) { print("Not enough gold."); return; }
-  addGold(-(item.price));
+  const price = getItemPrice(item);
+  if (state.gold < price) { print("Not enough gold."); return; }
+  addGold(-(price));
 
   if (item.type==='consumable') {
     if (item.id==='potion_hp') state.hp = Math.min(state.maxhp+getEquippedStats().maxhp, state.hp+25);
     else if (item.id==='potion_sta') state.stamina = Math.min(state.maxStamina, state.stamina+30);
-    burnGold(item.price);
-    print(`Used ${item.name}. (${fmtGold(item.price)}g burned)`);
+    burnGold(price);
+    const hikeNote = price > item.price ? ' [+500% wealth price]' : '';
+    print(`Used ${item.name}. (${fmtGold(price)}g burned)${hikeNote}`);
   } else {
-    const toTreasury = Math.floor(item.price * SHOP_TREASURY_RATE);
-    const burned = item.price - toTreasury;
+    const toTreasury = Math.floor(price * SHOP_TREASURY_RATE);
+    const burned = price - toTreasury;
     if (toTreasury > 0) contributeToPool('shopTreasury', toTreasury);
     if (burned > 0) burnGold(burned);
     state.ownedItems.push(itemId);
