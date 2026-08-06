@@ -485,16 +485,6 @@ function fmtGold(n) {
 }
 
 // ---------- Global gold supply (game-wide, like a crypto max supply) ----------
-// One shared counter across ALL players — once 21,000,000,000 total gold has
-// ever been minted into the game (via kills, quests, loot, etc.), no more
-// new gold can be created by anyone. This is NOT per-player; it's a single
-// fixed ceiling for the whole game's economy. Spending, trading on the
-// market, and losing gold in PvP don't affect this counter — it only tracks
-// gold that has ever been newly created.
-//
-// Also tracks:
-//   shopTreasury  – portion of NPC equipment purchases (soft sink + flavor)
-//   globalPool    – market taxes + overflow; funds future server events
 async function mintGold(amount) {
   if (!state || amount <= 0) return 0;
   // Optimistic local grant for responsive gameplay
@@ -543,10 +533,6 @@ async function contributeToPool(poolField, amount) {
   } catch(e) { /* best-effort */ }
 }
 
-// Tracks gold permanently destroyed (potions, rest, equipment's burned
-// portion, PvP fees/losses) — separate from totalMinted so players can
-// verify the "burned" claims shown in the Gold Economy panel instead of
-// just taking them on faith.
 async function burnGold(amount) {
   if (!amount || amount <= 0 || !currentUser) return;
   try {
@@ -1070,12 +1056,6 @@ function loadSettings() {
 }
 
 // ========== WALLET (multi-wallet via Wallet Standard + legacy fallbacks) ==========
-// Modern Solana-capable wallets (Phantom, Solflare, Backpack, and MetaMask's
-// newer Solana support) announce themselves to the page via the "Wallet
-// Standard" protocol instead of each needing a hardcoded window.* check.
-// We listen for that announcement, and ALSO fall back to the old
-// window.phantom.solana-style checks for anything that hasn't adopted it,
-// so nothing that used to work stops working.
 const detectedWallets = {}; // name -> adapter { name, connect, connectTrusted, disconnect }
 let activeWalletName = null;
 
@@ -1086,7 +1066,6 @@ function registerWalletAdapter(adapter) {
 }
 
 function wrapStandardWallet(wallet) {
-  // Only care about wallets that support the Solana chain namespace.
   const chains = wallet.chains || [];
   if (!chains.some(c => c.startsWith('solana:'))) return null;
   const connectFeature = wallet.features && wallet.features['standard:connect'];
@@ -1116,13 +1095,11 @@ function initWalletStandardDetection() {
     const adapter = wrapStandardWallet(wallet);
     if (adapter) registerWalletAdapter(adapter);
   }
-  // Ask already-loaded wallets to announce themselves.
   try {
     window.dispatchEvent(new CustomEvent('wallet-standard:app-ready', {
       detail: Object.freeze({ register: (...wallets) => wallets.forEach(onWalletAnnounced) })
     }));
   } catch(e) {}
-  // Listen for wallets that announce themselves after this point.
   window.addEventListener('wallet-standard:register-wallet', (event) => {
     try { event.detail.register((...wallets) => wallets.forEach(onWalletAnnounced)); } catch(e) {}
   });
@@ -1146,8 +1123,6 @@ function wrapLegacyProvider(provider, name) {
 }
 
 function detectLegacyWallets() {
-  // Only added as a fallback if Wallet Standard registration didn't
-  // already pick these up under the same name.
   if (window.phantom?.solana?.isPhantom && !detectedWallets['Phantom']) {
     registerWalletAdapter(wrapLegacyProvider(window.phantom.solana, 'Phantom'));
   }
@@ -1241,10 +1216,6 @@ async function tryAutoConnect() {
 }
 initWalletStandardDetection();
 async function redeemGold() {
-  // NOTE: This writes a "pending" redemption request that must be validated
-  // and approved server-side (e.g. Cloud Function + Firestore security rules)
-  // before any real TRI is ever sent. Client-reported gold amounts must never
-  // be trusted directly for payouts.
   if (!walletPubkey || !currentUser) return;
   const TRI_RATE = 100;
 
@@ -1277,16 +1248,6 @@ async function redeemGold() {
 }
 
 // ========== REDEMPTION RECONCILIATION ==========
-// Safety net for when the payout script rejects a redemption for
-// insufficient gold (see redeemGold()): the client deducts gold at
-// click-time, but a rejection with no local `refunded` flag means that
-// gold never made it to TRI and was never given back. This scans for
-// exactly that case and credits the player automatically.
-//
-// Uses a separate `clientRefunded` flag (rather than trusting only the
-// script's own `refunded` field) so it correctly catches old rejected docs
-// that predate the payout-script patch, without ever double-crediting a
-// request the script itself already refunded.
 async function reconcileRejectedRedemptions() {
   if (!currentUser || !state) return;
   try {
@@ -1366,10 +1327,8 @@ function rollLoot() {
 
 // ========== SHOP & INVENTORY ==========
 const SHOP_ITEMS = [
-  // Consumables
   { id:'potion_hp', name:'Health Potion', desc:'+25 HP', price:30, type:'consumable' },
   { id:'potion_sta', name:'Stamina Potion', desc:'+30 STA', price:25, type:'consumable' },
-  // Head → Feet starter gear
   { id:'leather_cap', name:'Leather Cap', desc:'+1 DEF', price:80, type:'equipment', slot:'head', def:1 },
   { id:'cloth_tunic', name:'Cloth Tunic', desc:'+1 DEF, +5 HP', price:100, type:'equipment', slot:'chest', def:1, maxhp:5 },
   { id:'iron_greaves', name:'Iron Greaves', desc:'+2 DEF', price:120, type:'equipment', slot:'legs', def:2 },
@@ -1428,10 +1387,6 @@ function renderMysteryMerchant() {
     return;
   }
   box.style.display = 'block';
-  // Seeded by the event window so the offer stays stable until the event
-  // actually rotates, instead of re-rolling on every render() (which fires
-  // every few seconds from the regen tick and could swap items out from
-  // under a player mid-purchase decision).
   const seed = Math.floor(eventEndTime / 1000) || 0;
   let s = seed;
   function seededRandom() {
@@ -1462,7 +1417,6 @@ function renderInventory() {
   const box = document.getElementById('inventory-box');
   if (!box || !state) return;
 
-  // Paper-doll: head → feet equipped view
   const slotRows = EQUIP_SLOTS.map(slot => {
     const itemId = state.equipped[slot];
     const item = itemId ? findShopItem(itemId) : null;
@@ -1480,7 +1434,6 @@ function renderInventory() {
     </div>`;
   }).join('');
 
-  // Bag: owned but not necessarily equipped
   const items = state.ownedItems.map(id => findShopItem(id)).filter(Boolean);
   let bagHtml = '';
   if (items.length === 0) {
@@ -1508,10 +1461,6 @@ function renderInventory() {
     ${bagHtml}`;
 }
 
-// Shop buyback: sell an owned equipment item back to the NPC shop for a
-// reduced price. Unlike a pure purchase (which burns gold out of the
-// economy entirely), this puts some gold back into circulation — same as
-// a pawn shop, not full value, but not a total loss either.
 const BUYBACK_RATE = 0.5; // 50% of original list price
 function getBuybackPrice(item) {
   return Math.max(1, Math.floor((item.price || 0) * BUYBACK_RATE));
@@ -1521,7 +1470,6 @@ function sellToShop(itemId) {
   const item = findShopItem(itemId);
   if (!item || !item.slot) { print("That item can't be sold."); return; }
   if (!state.ownedItems.includes(itemId)) { print("You don't own that item."); return; }
-  // Unequip first if it's currently worn
   for (const slot of EQUIP_SLOTS) {
     if (state.equipped[slot] === itemId) state.equipped[slot] = null;
   }
@@ -1561,13 +1509,11 @@ function buyItem(itemId) {
   addGold(-(item.price));
 
   if (item.type==='consumable') {
-    // Consumables = 100% gold sink (burned)
     if (item.id==='potion_hp') state.hp = Math.min(state.maxhp+getEquippedStats().maxhp, state.hp+25);
     else if (item.id==='potion_sta') state.stamina = Math.min(state.maxStamina, state.stamina+30);
     burnGold(item.price);
     print(`Used ${item.name}. (${fmtGold(item.price)}g burned)`);
   } else {
-    // Equipment: 30% → Shop Treasury, 70% burned
     const toTreasury = Math.floor(item.price * SHOP_TREASURY_RATE);
     const burned = item.price - toTreasury;
     if (toTreasury > 0) contributeToPool('shopTreasury', toTreasury);
@@ -1609,10 +1555,7 @@ function craftItem(recipeIndex) {
   if (state.ownedItems.includes(result.id)) {
     print("You already own that item."); return;
   }
-  // Remove consumed ingredients from inventory
   state.ownedItems = state.ownedItems.filter(id => id !== a && id !== b);
-  // FIX: also unequip any consumed ingredient so its stat bonus doesn't
-  // linger after the item no longer exists in ownedItems.
   for (const slot of EQUIP_SLOTS) {
     if (state.equipped[slot] === a || state.equipped[slot] === b) {
       state.equipped[slot] = null;
@@ -1625,19 +1568,12 @@ function craftItem(recipeIndex) {
 }
 
 // ========== PLAYER MARKET ==========
-// Design note: gold is never transferred directly between players' `saves`
-// documents (that would need a cross-user write, which client-side security
-// rules can't safely validate). Instead, buying a listing deletes it and
-// creates a "market_payouts" record; the seller collects it into their own
-// gold next time they click "Collect Earnings". This keeps every gold
-// mutation same-user, so the existing per-user Firestore rules still apply.
-
 function getSellableItems() {
   if (!state) return [];
   return state.ownedItems
     .map(id => findShopItem(id))
-    .filter(item => item && item.slot) // only equipment can be listed
-    .filter(item => !Object.values(state.equipped).includes(item.id)); // must be unequipped first
+    .filter(item => item && item.slot)
+    .filter(item => !Object.values(state.equipped).includes(item.id));
 }
 
 function populateMarketSellSelect() {
@@ -1665,7 +1601,6 @@ async function sellItem() {
   if (!state.ownedItems.includes(itemId) || Object.values(state.equipped).includes(itemId)) {
     print('You must own and unequip this item first.'); return;
   }
-  // Escrow: remove from inventory immediately so it can't be equipped/sold twice
   state.ownedItems = state.ownedItems.filter(id => id !== itemId);
   try {
     await db.collection('market_listings').add({
@@ -1679,7 +1614,6 @@ async function sellItem() {
     });
     print(`Listed ${item.name} for ${fmtGold(price)} gold.`);
   } catch(e) {
-    // Roll back escrow if the listing failed to save
     state.ownedItems.push(itemId);
     print('Failed to list item.');
   }
@@ -1798,10 +1732,6 @@ async function refreshGoldSupply() {
     const pctMinted = ((totalMinted / MAX_GOLD) * 100).toFixed(6);
     const remaining = Math.max(0, MAX_GOLD - totalMinted);
 
-    // Circulating estimate (who's actually holding it right now) is a
-    // separate, softer number pulled from published player stats — it can
-    // be lower than totalMinted since spending/redeeming removes gold from
-    // circulation without lowering the fixed max-supply counter.
     const snap = await db.collection('pvp_public').get();
     let circulating = 0, players = 0;
     let richest = { name: '—', gold: 0 };
@@ -1819,7 +1749,6 @@ async function refreshGoldSupply() {
     }
     const yourPctOfSupply = totalMinted > 0 ? (((state.gold||0) / totalMinted) * 100).toFixed(4) : '0';
 
-    // Guild bank (if in a guild)
     let guildTreasuryHtml = '';
     if (state.guildId) {
       try {
@@ -1913,7 +1842,6 @@ function fightMonster() {
   if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
   if (!useStamina(10)) return;
   initAudio();
-  // Rare monster spawn chance during events
   let rare = false;
   if (currentEvent && currentEvent.type !== 'mystery_merchant' && Math.random() < 0.15) rare = true;
   const monsters = [
@@ -1953,7 +1881,6 @@ function fightMonster() {
     print(`Victory! +${xpGain} XP, +${m.gold} gold.`); sfxVictory();
     rollLoot();
     if (currentEvent?.type === 'lucky_loot') rollLoot();
-    // Guild quest contribution
     if (state.guildId) contributeToGuildQuest();
     checkLevelUp();
   }
@@ -1983,9 +1910,6 @@ function renderDungeon() {
       <button class="action-btn" onclick="fightDungeonBoss()">Fight Boss</button>`;
   }
 }
-// Shared guard: resets the daily dungeon attempt if the date has rolled
-// over since it was last checked. Every dungeon action calls this first
-// so a run started right before midnight can't be continued into a new day.
 function ensureDungeonDay() {
   if (!state) return;
   const today = todayKey();
@@ -2032,7 +1956,7 @@ function fightDungeonWave() {
     state.hp = 1;
     const goldConsolation = 5 + wave * 2;
     mintGold(goldConsolation);
-    state.dungeonProgress = 0; // failed
+    state.dungeonProgress = 0;
     print(`You were defeated in the dungeon. Received ${goldConsolation} gold.`);
     sfxDefeat();
   } else {
@@ -2093,7 +2017,6 @@ function fightDungeonBoss() {
     state.kills++;
     print(`Dungeon complete! Defeated ${boss.name}! +${boss.gold} gold, +${boss.xp} XP.`);
     sfxVictory();
-    // guaranteed rare item
     const rareItem = FEATURED_ITEMS[Math.floor(Math.random()*FEATURED_ITEMS.length)];
     if (!state.ownedItems.includes(rareItem.id)) {
       state.ownedItems.push(rareItem.id);
@@ -2120,7 +2043,7 @@ async function renderGuild() {
         <span style="color:#7d8590;">Higher treasury unlocks stronger ranks (up to +20% XP, −2 STA, Rest 10g)</span>
       </div>
       <div class="btnrow">
-        <button onclick="showGuildList()">Browse & Join Guild (100g)</button>
+        <button onclick="showGuildList()">Browse Guilds</button>
         <button onclick="createGuild()">Create Guild (500g)</button>
       </div>`;
     return;
@@ -2169,7 +2092,7 @@ async function renderGuild() {
       <div class="btnrow" style="margin-top:8px;">
         <button onclick="contributeToGuild()">Contribute 50g</button>
         ${questDone && !guild.weeklyQuestClaimed ? `<button onclick="claimGuildQuest()">Claim Quest Reward</button>` : ''}
-        ${isLeader ? `<button onclick="declareWarPrompt()">Declare War (200g)</button>` : ''}
+        <button onclick="showGuildList()">Browse Guilds</button>
         <button onclick="leaveGuild()">Leave Guild</button>
       </div>`;
   } catch(e) {
@@ -2181,7 +2104,6 @@ async function createGuild() {
   const name = prompt('Enter guild name:');
   if (!name) return;
   if (state.gold < 500) { print('Need 500 gold.'); return; }
-  // Check unique name
   const existing = await db.collection('guilds').where('name','==',name).get();
   if (!existing.empty) { print('Guild name already exists.'); return; }
   const trimmed = name.trim().slice(0, 24);
@@ -2204,15 +2126,18 @@ async function createGuild() {
     print(`Guild ${trimmed} created! Guild bonuses active.`);
     render();
   } catch(e) {
-    addGold(500); // refund on failure
+    addGold(500);
     print('Failed to create guild.');
   }
 }
 
+// Browse ALL guilds — always accessible, whether or not you're in one.
+// Shows Declare War instead of Join when you're the leader of your own
+// guild looking at a rival, and marks your own guild instead of showing
+// an action button on it.
 async function showGuildList() {
   const panel = document.getElementById('guild-panel');
   if (!panel || !state) return;
-  if (state.gold < 100) { print('Need 100 gold to join a guild.'); return; }
 
   panel.innerHTML = '<div style="color:#7d8590;">Loading guilds...</div>';
   try {
@@ -2228,27 +2153,42 @@ async function showGuildList() {
       return;
     }
 
-    // Sort by member count (largest first)
     guilds.sort((a, b) => (b.members?.length || 0) - (a.members?.length || 0));
+
+    const ownGuild = state.guildId ? guilds.find(g => g.id === state.guildId) : null;
+    const isLeaderOfOwnGuild = !!(ownGuild && ownGuild.leaderUid === currentUser.uid);
 
     const listHtml = guilds.map(g => {
       const memberCount = g.members?.length || 0;
       const leader = g.members?.find(m => m.uid === g.leaderUid);
       const leaderName = leader ? leader.username : 'Unknown';
+      const isOwnGuild = g.id === state.guildId;
+
+      let actionBtn;
+      if (isOwnGuild) {
+        actionBtn = `<span style="color:#e3b341;font-size:12px;">Your guild</span>`;
+      } else if (isLeaderOfOwnGuild) {
+        actionBtn = `<button onclick="declareWarOn('${g.id}','${esc(g.name).replace(/'/g,"\\'")}')">Declare War (200g)</button>`;
+      } else if (!state.guildId) {
+        actionBtn = `<button onclick="joinGuild('${g.id}')">Join (100g)</button>`;
+      } else {
+        actionBtn = `<span style="color:#7d8590;font-size:12px;">—</span>`;
+      }
+
       return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #21262d;">
         <div>
           <b style="color:#e3b341;">${esc(g.name)}</b>
           <div style="font-size:12px;color:#7d8590;">${memberCount} member${memberCount===1?'':'s'} · Leader: ${esc(leaderName)} · Treasury: ${fmtGold(g.treasury||0)}g</div>
         </div>
-        <button onclick="joinGuild('${g.id}')">Join (100g)</button>
+        ${actionBtn}
       </div>`;
     }).join('');
 
     panel.innerHTML = `
-      <div style="margin-bottom:8px;color:#7d8590;">Select a guild to join (costs 100 gold):</div>
+      <div style="margin-bottom:8px;color:#7d8590;">All guilds:</div>
       ${listHtml}
       <div class="btnrow" style="margin-top:10px;">
-        <button onclick="createGuild()">Create Guild (500g)</button>
+        ${!state.guildId ? `<button onclick="createGuild()">Create Guild (500g)</button>` : ''}
         <button onclick="renderGuild()">Back</button>
       </div>`;
   } catch(e) {
@@ -2269,7 +2209,6 @@ async function joinGuild(guildId) {
     if (!guildDoc.exists) { print('Guild no longer exists.'); showGuildList(); return; }
 
     const guild = guildDoc.data();
-    // Prevent joining if already a member (e.g. multi-tab)
     if (guild.members?.some(m => m.uid === currentUser.uid)) {
       state.guildId = guildId;
       cachedGuildTreasury = guild.treasury || 0;
@@ -2294,7 +2233,7 @@ async function joinGuild(guildId) {
     print(`Joined ${guild.name}! Guild bonuses now active.`);
     render();
   } catch(e) {
-    addGold(100); // refund on failure
+    addGold(100);
     print('Failed to join guild.');
   }
 }
@@ -2319,10 +2258,6 @@ async function contributeToGuildQuest() {
   if (!state.guildId) return;
   const guildRef = db.collection('guilds').doc(state.guildId);
   try {
-    // Transaction guards against two members' kills racing on the same
-    // read-then-write and one of the increments getting silently dropped
-    // (or the "new day" branch firing twice and resetting progress a
-    // second member just contributed to).
     await db.runTransaction(async t => {
       const doc = await t.get(guildRef);
       if (!doc.exists) return;
@@ -2353,35 +2288,31 @@ async function claimGuildQuest() {
   render();
 }
 
-async function declareWarPrompt() {
-  const targetName = prompt('Enter guild name to war:');
-  if (!targetName) return;
-  const snapshot = await db.collection('guilds').where('name','==',targetName).get();
-  if (snapshot.empty) { print('Guild not found.'); return; }
-  const targetDoc = snapshot.docs[0];
+// Declare war on a specific guild by ID/name — invoked by clicking a
+// guild card in showGuildList(), no prompt() needed. Only rendered for
+// leaders of their own guild, looking at a guild that isn't their own.
+async function declareWarOn(targetGuildId, targetGuildName) {
+  if (!state || !state.guildId || !currentUser) return;
   const guildRef = db.collection('guilds').doc(state.guildId);
-  // Transaction: read treasury and deduct the 200g war cost atomically so
-  // two near-simultaneous war declarations (or a declaration racing a
-  // donation) can't both pass the >=200 check against a stale balance.
-  let targetGuildName = null;
   try {
     await db.runTransaction(async t => {
       const guildDoc = await t.get(guildRef);
       if (!guildDoc.exists) throw new Error('Guild not found.');
       const guild = guildDoc.data();
+      if (guild.leaderUid !== currentUser.uid) throw new Error('Only the guild leader can declare war.');
       if ((guild.treasury || 0) < 200) throw new Error('Guild treasury needs 200 gold.');
-      targetGuildName = targetDoc.data().name;
       t.update(guildRef, { treasury: firebase.firestore.FieldValue.increment(-200) });
     });
   } catch(e) {
     print(e.message || 'Failed to declare war.');
     return;
   }
+  cachedGuildTreasury = Math.max(0, cachedGuildTreasury - 200);
   print(`War declared on ${targetGuildName}! Resolving in 5 minutes...`);
+  render();
   setTimeout(async () => {
-    // Resolve war
     const gDoc = await guildRef.get();
-    const tDoc = await targetDoc.ref.get();
+    const tDoc = await db.collection('guilds').doc(targetGuildId).get();
     if (!gDoc.exists || !tDoc.exists) return;
     const g = gDoc.data(); const t = tDoc.data();
     const gAvg = g.members.reduce((s,m) => s + (m.level||1), 0) / g.members.length;
@@ -2389,8 +2320,9 @@ async function declareWarPrompt() {
     if (gAvg > tAvg) {
       const steal = Math.floor(t.treasury * 0.3);
       await guildRef.update({ treasury: firebase.firestore.FieldValue.increment(steal) });
-      await targetDoc.ref.update({ treasury: firebase.firestore.FieldValue.increment(-steal) });
+      await db.collection('guilds').doc(targetGuildId).update({ treasury: firebase.firestore.FieldValue.increment(-steal) });
       print(`War won! Stole ${steal} gold from ${t.name}.`);
+      if (state.guildId === g.id || true) { cachedGuildTreasury += steal; render(); }
     } else {
       print(`War lost against ${t.name}.`);
     }
@@ -2401,13 +2333,6 @@ async function leaveGuild() {
   if (!state.guildId || !currentUser) return;
   const guildRef = db.collection('guilds').doc(state.guildId);
   try {
-    // FIX: arrayRemove() requires an exact object match against what's
-    // stored — since `level` (and potentially avatar/username) can drift
-    // after joining, the old arrayRemove({uid, username, avatar, level})
-    // call would silently no-op and leave the player stuck as a ghost
-    // member forever. Instead, read the guild, filter the member out by
-    // uid, and overwrite the array directly (inside a transaction so a
-    // concurrent join/leave can't clobber it).
     let leftName = null;
     await db.runTransaction(async t => {
       const doc = await t.get(guildRef);
@@ -2416,10 +2341,8 @@ async function leaveGuild() {
       const newMembers = (guild.members || []).filter(m => m.uid !== currentUser.uid);
       leftName = guild.name;
       if (newMembers.length === 0) {
-        // Last member leaving — remove the now-empty guild entirely.
         t.delete(guildRef);
       } else {
-        // If the leader is leaving, hand leadership to the next member.
         const update = { members: newMembers };
         if (guild.leaderUid === currentUser.uid) {
           update.leaderUid = newMembers[0].uid;
@@ -2510,9 +2433,7 @@ function checkLevelUp() {
 
 // ========== PVP & ARENA ==========
 function generateBots(playerLevel) {
-  // Single competitive bot, closely matched to the player's level
-  // (instead of the old mix of easy/weak bots + one wildly overpowered bot)
-  const lvl = Math.max(1, playerLevel + Math.floor(Math.random() * 3) - 1); // playerLevel -1, 0, or +1
+  const lvl = Math.max(1, playerLevel + Math.floor(Math.random() * 3) - 1);
   const hero = HEROES[Math.floor(Math.random() * HEROES.length)];
   let str = 4 + lvl * 2 + Math.floor(Math.random() * 3);
   let def = 4 + lvl * 2 + Math.floor(Math.random() * 3);
@@ -2538,9 +2459,6 @@ async function refreshArena() {
       if (r.uid !== currentUser?.uid) humans.push(r);
     });
   } catch(e){}
-  // Randomly pick up to 4 human players (online or offline — pvp_public
-  // just holds their last-published stats), then always add exactly 1
-  // competitive AI bot. Max pool size = 5.
   for (let i = humans.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [humans[i], humans[j]] = [humans[j], humans[i]];
@@ -2623,7 +2541,6 @@ function fightPlayer(index) {
   }
   startCooldown(60);
   render();
-  // Swap in a fresh random pool (4 humans + 1 bot) only after this attack ends
   refreshArena();
 }
 
@@ -2821,7 +2738,6 @@ function startTavernListener() {
       snapshot.forEach(doc => {
         const msg = doc.data();
         const time = new Date(msg.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-        // FIX: escape user-controlled fields (username, avatar, text) to prevent stored XSS
         box.innerHTML += `<div><b>${esc(msg.avatar||'')} ${esc(msg.username)}:</b> ${esc(msg.text)} <span style="color:#7d8590;font-size:11px;">${esc(time)}</span></div>`;
       });
       box.scrollTop = box.scrollHeight;
@@ -2843,9 +2759,9 @@ function sendChat() {
 }
 
 // ========== STAMINA + HP REGEN ==========
-let regenTick = 6;   // stamina every 6s
-let hpRegenTick = 8; // HP every 8s
-const HP_REGEN_AMOUNT = 1; // +1 HP per tick (out of combat passive)
+let regenTick = 6;
+let hpRegenTick = 8;
+const HP_REGEN_AMOUNT = 1;
 
 setInterval(() => {
   if (!state) return;
@@ -2853,7 +2769,6 @@ setInterval(() => {
   const totalMaxHp = state.maxhp + eq.maxhp;
   let needsRender = false;
 
-  // --- Stamina regen ---
   let staText;
   if (state.stamina < state.maxStamina) {
     regenTick--;
@@ -2868,7 +2783,6 @@ setInterval(() => {
     staText = 'STA full';
   }
 
-  // --- HP regen (passive, only when alive and not full) ---
   let hpText;
   const hpGain = HP_REGEN_AMOUNT + (getGuildPerks().hpRegenBonus || 0);
   if (state.hp > 0 && state.hp < totalMaxHp) {
@@ -2900,8 +2814,6 @@ function resetGame() {
   if (!confirm("Reset?")) return;
   state = null;
   db.collection('saves').doc(currentUser.uid).delete();
-  // FIX: also clear in-memory session globals so nothing leaks from the
-  // previous character into the new one (cooldowns, arena cache, etc.)
   if (cooldownInterval) { clearInterval(cooldownInterval); cooldownInterval = null; }
   actionCooldownRemaining = 0;
   arenaRecords = [];
