@@ -608,6 +608,21 @@ async function burnGold(amount) {
   } catch(e) { /* best-effort */ }
 }
 
+// NEW: reverse a previous burn (used when a burned-gold transaction, e.g. a
+// TRI redemption, is later rejected/refunded). Keeps totalMinted - totalBurned
+// == actual circulating gold. Clamped at 0 so it can never go negative.
+async function unburnGold(amount) {
+  if (!amount || amount <= 0 || !currentUser) return;
+  try {
+    const ref = db.collection('gameStats').doc('goldSupply');
+    await db.runTransaction(async t => {
+      const doc = await t.get(ref);
+      const current = doc.exists ? (doc.data().totalBurned || 0) : 0;
+      t.set(ref, { totalBurned: Math.max(0, current - amount) }, { merge: true });
+    });
+  } catch(e) { /* best-effort */ }
+}
+
 // Achievements definitions
 const ACHIEVEMENTS = [
   { id:'kills10', name:'Hunter', desc:'Kill 10 enemies', check: s => s.kills >= 10, reward: {gold:50, xp:20} },
@@ -1318,6 +1333,14 @@ async function redeemGold() {
 }
 
 // ========== REDEMPTION RECONCILIATION ==========
+// FIX (see Gold Economy audit): rejected redemptions used to refund the
+// player's gold via addGold() without ever reversing the totalBurned
+// counter that was incremented when the redemption was first submitted.
+// That let refunded gold exist in a player's balance while ALSO still
+// being counted as permanently burned in gameStats/goldSupply, which
+// silently inflated real circulating supply beyond totalMinted - totalBurned.
+// Now every refund calls unburnGold() for the same amount, so the ledger
+// (totalMinted - totalBurned) always matches actual circulating gold.
 async function reconcileRejectedRedemptions() {
   if (!currentUser || !state) return;
   try {
@@ -1336,9 +1359,11 @@ async function reconcileRejectedRedemptions() {
     });
     if (totalRefunded > 0) {
       addGold(totalRefunded);
+      await unburnGold(totalRefunded); // reverse the original burn so supply ledger stays accurate
       await Promise.all(batchUpdates);
       print(`Recovered ${fmtGold(totalRefunded)} gold from ${batchUpdates.length} rejected redemption(s) that were never refunded.`);
       render();
+      refreshGoldSupply();
     }
   } catch (e) { /* best-effort, don't block login on this */ }
 }
@@ -1852,14 +1877,25 @@ async function refreshGoldSupply() {
       } catch(e) {}
     }
 
+    // Reconciliation check: net-in-circulation (minted - burned) should
+    // always be >= what's actually held by tracked players. If it isn't,
+    // the ledger has drifted (this is what the unburnGold() fix above
+    // prevents going forward) — surface it instead of hiding it.
+    const netInCirculation = Math.max(0, totalMinted - totalBurned);
+    const ledgerDrift = circulating - netInCirculation;
+    const driftWarning = ledgerDrift > 0
+      ? `<div style="margin-top:6px;color:#f85149;font-size:11px;">⚠ Ledger drift detected: circulating gold exceeds net-minted by ${fmtGold(ledgerDrift)}. Likely from refunds recorded before the unburn fix — historical only, won't grow going forward.</div>`
+      : '';
+
     box.innerHTML = `
       <div><b>Max Supply (fixed, game-wide):</b> ${fmtGold(MAX_GOLD)} gold</div>
       <div><b>Total Minted So Far:</b> ${fmtGold(totalMinted)} gold <span style="color:#7d8590;">(${pctMinted}% of max)</span></div>
       <div><b>Remaining Mintable:</b> ${fmtGold(remaining)} gold</div>
       <div><b>Total Burned So Far:</b> ${fmtGold(totalBurned)} gold <span style="color:#7d8590;">(potions, rest, PvP, equipment-burn portion)</span></div>
-      <div><b>Net In Circulation (minted − burned):</b> ${fmtGold(Math.max(0, totalMinted - totalBurned))} gold</div>
+      <div><b>Net In Circulation (minted − burned):</b> ${fmtGold(netInCirculation)} gold</div>
       <div style="margin-top:6px;"><b>Circulating (held by known players):</b> ${fmtGold(circulating)} gold <span style="color:#7d8590;">(${players} player${players===1?'':'s'} tracked)</span></div>
       <div><b>Richest Known Holder:</b> ${esc(richest.name)} — ${fmtGold(richest.gold)} gold</div>
+      ${driftWarning}
       <div style="margin-top:8px; border-top:1px solid #21262d; padding-top:8px;">
         <div style="color:#e3b341; margin-bottom:4px;">🏦 Shared Pools</div>
         <div><b>Shop Treasury:</b> ${fmtGold(shopTreasury)} gold <span style="color:#7d8590;">(30% of equipment buys)</span></div>
