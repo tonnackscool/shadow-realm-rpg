@@ -259,6 +259,7 @@
     <button onclick="train('str')" class="action-btn">Train Strength (-5 STA)</button>
     <button onclick="train('def')" class="action-btn">Train Defense (-5 STA)</button>
     <button onclick="train('hp')" class="action-btn">Train Vitality (-8 STA)</button>
+    <button onclick="buyMaxHP()" class="action-btn" id="buyMaxHpBtn">Buy Max HP</button>
   </div>
 
   <!-- Actions -->
@@ -924,7 +925,8 @@ function selectHero(id) {
     avatar: '⚔️', theme: '#e3b341',
     guildId: null,
     dungeonDate: null, dungeonProgress: 0, dungeonRetreated: false,
-    lastWealthTaxAt: 0
+    lastWealthTaxAt: 0,
+    hpPurchases: 0
   };
   pendingUsername = null;
   document.getElementById('hero-select').style.display = 'none';
@@ -1060,6 +1062,8 @@ function render() {
   const pct = Math.max(0, Math.round((state.stamina / state.maxStamina) * 100));
   document.getElementById('bar').style.width = pct + '%';
   document.getElementById('bar').style.background = pct < 25 ? '#f85149' : (pct < 60 ? '#e3b341' : '#3fb950');
+  const buyHpBtn = document.getElementById('buyMaxHpBtn');
+  if (buyHpBtn) buyHpBtn.textContent = `Buy Max HP (+${BUY_HP_AMOUNT}) — ${fmtGold(getBuyMaxHpCost())}g`;
   save();
   renderShop();
   renderCrafting();
@@ -1110,6 +1114,7 @@ async function load() {
       if (!state.dungeonDate) state.dungeonDate = null;
       if (!state.dungeonProgress) state.dungeonProgress = 0;
       if (state.lastWealthTaxAt === undefined) state.lastWealthTaxAt = 0;
+      if (state.hpPurchases === undefined) state.hpPurchases = 0;
       // Hard-clamp any legacy / inflated gold to the 21B max
       if (typeof state.gold !== 'number' || state.gold < 0) state.gold = 0;
       if (state.gold > MAX_GOLD) state.gold = MAX_GOLD;
@@ -1380,6 +1385,34 @@ function train(type) {
   startCooldown(60);
   render();
 }
+
+// ========== BUY MAX HP (gold sink, no stamina cost) ==========
+const BUY_HP_AMOUNT = 5;       // +5 max HP per purchase
+const BUY_HP_BASE_COST = 40;   // starting gold cost
+const BUY_HP_COST_STEP = 8;    // cost increases per purchase already made
+
+function getBuyMaxHpCost() {
+  if (!state) return BUY_HP_BASE_COST;
+  const purchases = state.hpPurchases || 0;
+  return BUY_HP_BASE_COST + purchases * BUY_HP_COST_STEP;
+}
+
+function buyMaxHP() {
+  if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
+  if (!state) return;
+  const cost = getBuyMaxHpCost();
+  if (state.gold < cost) { print(`Need ${fmtGold(cost)} gold for +${BUY_HP_AMOUNT} Max HP.`); return; }
+  addGold(-cost);
+  burnGold(cost);
+  state.maxhp += BUY_HP_AMOUNT;
+  state.hp = Math.min(state.maxhp + getEquippedStats().maxhp, state.hp + BUY_HP_AMOUNT);
+  state.hpPurchases = (state.hpPurchases || 0) + 1;
+  print(`Bought +${BUY_HP_AMOUNT} Max HP for ${fmtGold(cost)} gold. (${fmtGold(cost)}g burned)`);
+  sfxTrain();
+  startCooldown(60);
+  render();
+}
+
 function rest() {
   if (actionCooldownRemaining > 0) { print("Cooldown active."); return; }
   const cost = getGuildPerks().restCost;
